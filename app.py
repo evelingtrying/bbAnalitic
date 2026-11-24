@@ -102,7 +102,7 @@ st.markdown("""
     }
     .btn-danger > button {
         background: linear-gradient(135deg, rgba(239, 68, 68, 0.8) 0%, rgba(220, 38, 38, 0.8) 100%) !important;
-        box-shadow: 0 4px 15px rgba(239, 68, 68, 0.2);
+        box-shadow: 0 4px fifteenpx rgba(239, 68, 68, 0.2);
     }
     .btn-danger > button:hover {
         box-shadow: 0 6px 20px rgba(239, 68, 68, 0.4);
@@ -128,7 +128,7 @@ def process_uploaded_images(uploaded_files):
 
         h, w = img.shape[:2]
         
-        # НАРЕЗКА: по 10000 пикселей с перекрытием 800
+        # 🪄 НАРЕЗКА: по 10000 пикселей с перекрытием 800, чтобы не разрывать карточки ставок
         max_height = 10000
         overlap = 800
         
@@ -204,83 +204,83 @@ def process_uploaded_images(uploaded_files):
         # Жесткое удаление дубликатов с учетом нормализованной суммы
         df_res = df_res.drop_duplicates(subset=['Дата', 'Время', 'Сумма_изменения'])
     return df_res
+
 # ==========================================
 # 📊 ОСНОВНАЯ ЛОГИКА
-    # ==========================================
-    # 📊 ОСНОВНАЯ ЛОГИКА
-    # ==========================================
-    st.markdown("<h1>💎 BetBoom Analytics</h1>", unsafe_allow_html=True)
+# ==========================================
+st.markdown("<h1>💎 BetBoom Analytics</h1>", unsafe_allow_html=True)
 
-    # Боковая панель для загрузки данных
-    with st.sidebar:
-        st.markdown("### ⚙️ Управление")
-        st.markdown("Загрузите скриншоты, чтобы обновить статистику.")
-        
-        uploaded_files = st.file_uploader("Выберите скриншоты", type=['png', 'jpg', 'jpeg'], accept_multiple_files=True)
-        
-        if st.button("🚀 Обработать скриншоты"):
-            if uploaded_files:
-                with st.spinner('Нейросеть читает ваши ставки... Это займет около 10-20 секунд...'):
-                    new_df = process_uploaded_images(uploaded_files)
-                    if not new_df.empty:
-                        if 'df' not in st.session_state:
-                            st.session_state.df = new_df
-                        else:
-                            combined = pd.concat([st.session_state.df, new_df])
-                            st.session_state.df = combined.drop_duplicates(subset=['Дата', 'Время', 'Сумма_изменения'])
-                        st.success("Данные обновлены!")
+# Боковая панель для загрузки данных
+with st.sidebar:
+    st.markdown("### ⚙️ Управление")
+    st.markdown("Загрузите скриншоты, чтобы обновить статистику.")
+    
+    uploaded_files = st.file_uploader("Выберите скриншоты", type=['png', 'jpg', 'jpeg'], accept_multiple_files=True)
+    
+    if st.button("🚀 Обработать скриншоты"):
+        if uploaded_files:
+            with st.spinner('Нейросеть читает ваши ставки... Это займет около 10-20 секунд...'):
+                new_df = process_uploaded_images(uploaded_files)
+                if not new_df.empty:
+                    if 'df' not in st.session_state:
+                        st.session_state.df = new_df
                     else:
-                        st.error("Не удалось распознать ставки. Попробуйте еще раз.")
-            else:
-                st.warning("Пожалуйста, выберите файлы.")
+                        combined = pd.concat([st.session_state.df, new_df])
+                        st.session_state.df = combined.drop_duplicates(subset=['Дата', 'Время', 'Сумма_изменения'])
+                    st.success("Данные обновлены!")
+                else:
+                    st.error("Не удалось распознать ставки. Попробуйте еще раз.")
+        else:
+            st.warning("Пожалуйста, выберите файлы.")
 
-        st.markdown("---")
-        st.markdown("### 💾 База данных")
-        
-        if 'df' in st.session_state and not st.session_state.df.empty:
-            csv = st.session_state.df.to_csv(sep=';', index=False).encode('utf-8-sig')
-            st.download_button(
-                label="📥 Скачать базу (CSV)", 
-                data=csv, 
-                file_name='bets_all.csv', 
-                mime='text/csv'
-            )
-            
-            st.markdown('<div class="btn-danger">', unsafe_allow_html=True)
-            if st.button("🗑️ Очистить все данные"):
-                st.session_state.df = pd.DataFrame()
-                st.success("База данных очищена! Загрузите новые скриншоты.")
-                st.rerun()
-            st.markdown('</div>', unsafe_allow_html=True)
-            
-            st.caption("Не забудьте скачать CSV, чтобы не потерять данные при перезапуске сервера.")
-
-    # Если данные есть в памяти, показываем дашборд
+    st.markdown("---")
+    st.markdown("### 💾 База данных")
+    
     if 'df' in st.session_state and not st.session_state.df.empty:
-        df = st.session_state.df.copy()
+        csv = st.session_state.df.to_csv(sep=';', index=False).encode('utf-8-sig')
+        st.download_button(
+            label="📥 Скачать базу (CSV)", 
+            data=csv, 
+            file_name='bets_all.csv', 
+            mime='text/csv'
+        )
         
-        current_year = datetime.now().year 
-        months_dict = {'января': '01', 'февраля': '02', 'марта': '03', 'апреля': '04', 'мая': '05', 'июня': '06', 'июля': '07', 'августа': '08', 'сентября': '09', 'октября': '10', 'ноября': '11', 'декабря': '12'}
+        st.markdown('<div class="btn-danger">', unsafe_allow_html=True)
+        if st.button("🗑️ Очистить все данные"):
+            st.session_state.df = pd.DataFrame()
+            st.success("База данных очищена! Загрузите новые скриншоты.")
+            st.rerun()
+        st.markdown('</div>', unsafe_allow_html=True)
         
-        # 🛠️ ФУНКЦИЯ ОЧИСТКИ ДАТЫ (должна быть на уровне основного кода)
-        def clean_date(date_str):
-            date_str = str(date_str).lower().strip()
-            for rus_month, num_month in months_dict.items():
-                if rus_month in date_str:
-                    date_str = date_str.replace(rus_month, num_month).replace(' ', '.')
-                    return f"{date_str}.{current_year}"
-            # Если месяц не указан (формат ДД.ММ), подставляем текущий месяц
-            if re.match(r'^\d{1,2}\.\d{1,2}$', date_str):
-                current_month_num = datetime.now().strftime('%m')
-                current_month_name = datetime.now().strftime('%B')
-                return f"{date_str}.{current_month_num}.{current_year}"
-            return date_str
-        
-        df['Дата_парсинг'] = df['Дата'].apply(clean_date)
-        df['Дата_парсинг'] = pd.to_datetime(df['Дата_парсинг'], format='%d.%m.%Y', errors='coerce')
-        df['Время_парсинг'] = pd.to_datetime(df['Время'], format='%H:%M', errors='coerce').dt.time
-        df = df.sort_values(by=['Дата_парсинг', 'Время_парсинг'], ascending=[False, False])
-        df['Месяц'] = df['Дата_парсинг'].dt.strftime('%B %Y')
+        st.caption("Не забудьте скачать CSV, чтобы не потерять данные при перезапуске сервера.")
+
+# Если данные есть в памяти, показываем дашборд
+if 'df' in st.session_state and not st.session_state.df.empty:
+    df = st.session_state.df.copy()
+    
+    current_year = datetime.now().year 
+    months_dict = {'января': '01', 'февраля': '02', 'марта': '03', 'апреля': '04', 'мая': '05', 'июня': '06', 'июля': '07', 'августа': '08', 'сентября': '09', 'октября': '10', 'ноября': '11', 'декабря': '12'}
+    
+    # 🛠️ ФУНКЦИЯ ОЧИСТКИ ДАТЫ (на уровне основного кода)
+    def clean_date(date_str):
+        date_str = str(date_str).lower().strip()
+        for rus_month, num_month in months_dict.items():
+            if rus_month in date_str:
+                date_str = date_str.replace(rus_month, num_month).replace(' ', '.')
+                return f"{date_str}.{current_year}"
+        # Если месяц не указан (формат ДД.ММ), подставляем текущий месяц
+        if re.match(r'^\d{1,2}\.\d{1,2}$', date_str):
+            current_month_num = datetime.now().strftime('%m')
+            current_month_name = datetime.now().strftime('%B')
+            return f"{date_str}.{current_month_num}.{current_year}"
+        return date_str
+    
+    df['Дата_парсинг'] = df['Дата'].apply(clean_date)
+    df['Дата_парсинг'] = pd.to_datetime(df['Дата_парсинг'], format='%d.%m.%Y', errors='coerce')
+    df['Время_парсинг'] = pd.to_datetime(df['Время'], format='%H:%M', errors='coerce').dt.time
+    df = df.sort_values(by=['Дата_парсинг', 'Время_парсинг'], ascending=[False, False])
+    df['Месяц'] = df['Дата_парсинг'].dt.strftime('%B %Y')
+
     df_rev = df.iloc[::-1].reset_index(drop=True)
     df_rev['Баланс'] = df_rev['Сумма_изменения'].cumsum()
     df_rev['Номер ставки'] = df_rev.index + 1
@@ -292,7 +292,7 @@ def process_uploaded_images(uploaded_files):
     wins = len(df[df['Результат'] == 'Выигрыш'])
     winrate = (wins / total_bets) * 100 if total_bets > 0 else 0
     total_pnl = df['Сумма_изменения'].sum()
-    avg_bet = abs(df[df['Сумма_изменения'] < 0]['Сумма_изменения'].mean())
+    avg_bet = abs(df[df['Сумма_изменения'] < 0]['Сумма_изменения'].mean()) if not df[df['Сумма_изменения'] < 0].empty else 0
 
     with col1:
         st.markdown(f'<div class="custom-card card-left"><div class="card-title">Всего ставок</div><div class="card-value">{total_bets:,}</div></div>', unsafe_allow_html=True)
@@ -324,10 +324,10 @@ def process_uploaded_images(uploaded_files):
         fig.add_hline(y=0, line_dash="dot", line_color="#94a3b8", opacity=0.5)
         fig.update_layout(title=dict(text="Динамика банкролла", font=dict(color='#f8fafc', size=20)), xaxis=dict(title="Номер ставки", gridcolor='rgba(255,255,255,0.05)', color='#94a3b8'), yaxis=dict(title="Прибыль/Убыток (₽)", gridcolor='rgba(255,255,255,0.05)', color='#94a3b8'), hovermode="x unified", margin=dict(l=20, r=20, t=60, b=20), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font=dict(family="Inter, sans-serif"))
         st.plotly_chart(fig, use_container_width=True)
-       with tab2:
+
+    with tab2:
         months = df['Месяц'].dropna().unique()
         if len(months) > 0:
-            # Исправлено: убрана лишняя скобка в st.tabs
             month_tabs = st.tabs([f"📅 {m}" for m in months])
             for m_tab, month_name in zip(month_tabs, months):
                 with m_tab:
