@@ -120,17 +120,29 @@ st.markdown("""
 def process_uploaded_images(uploaded_files):
     all_bets_data = []
     for uploaded_file in uploaded_files:
+        # Читаем картинку из памяти браузера
         file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
         img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
         if img is None: continue
 
+        # Нарезаем картинку на полосы по 3000 пикселей (это самое надежное)
         h, w = img.shape[:2]
-        max_height = 8000
-        chunks = [img[y:y+max_height, :] for y in range(0, h, max_height - 100)]
+        chunk_height = 3000
+        overlap = 200
+        chunks = []
+        y = 0
+        while y < h:
+            y2 = min(y + chunk_height, h)
+            chunks.append(img[y:y2, :])
+            if y2 == h: break
+            y = y2 - overlap
 
         for chunk in chunks:
             gray = cv2.cvtColor(chunk, cv2.COLOR_BGR2GRAY)
-            if np.mean(gray) < 128: gray = cv2.bitwise_not(gray)
+            if np.mean(gray) < 128: 
+                gray = cv2.bitwise_not(gray)
+                
+            # Возвращаем увеличение в 3 раза и INTER_CUBIC
             gray = cv2.resize(gray, None, fx=3.0, fy=3.0, interpolation=cv2.INTER_CUBIC)
             _, thresh = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY)
 
@@ -154,10 +166,15 @@ def process_uploaded_images(uploaded_files):
 
                     if is_transaction or not (date_str and time_str): continue
 
+                    # Метод "Лупы" для точного чтения суммы
                     pad = 10
-                    crop = thresh[max(0, amount_y-pad):min(thresh.shape[0], amount_y+amount_h+pad), max(0, amount_x-pad):min(thresh.shape[1], amount_x+amount_w+pad)]
+                    y1, y2_amt = max(0, amount_y-pad), min(thresh.shape[0], amount_y+amount_h+pad)
+                    x1, x2_amt = max(0, amount_x-pad), min(thresh.shape[1], amount_x+amount_w+pad)
+                    
+                    crop = thresh[y1:y2_amt, x1:x2_amt]
                     crop = cv2.resize(crop, None, fx=5.0, fy=5.0, interpolation=cv2.INTER_CUBIC)
                     amount_text = pytesseract.image_to_string(crop, lang='rus+eng', config='--psm 7').strip()
+                    
                     amount_text = amount_text.replace(' ', '').replace(',', '.')
                     amount_match = re.search(r'([+-]\d+(?:\.\d+)?)', amount_text)
                     
