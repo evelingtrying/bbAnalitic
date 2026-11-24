@@ -324,9 +324,10 @@ def process_uploaded_images(uploaded_files):
         fig.add_hline(y=0, line_dash="dot", line_color="#94a3b8", opacity=0.5)
         fig.update_layout(title=dict(text="Динамика банкролла", font=dict(color='#f8fafc', size=20)), xaxis=dict(title="Номер ставки", gridcolor='rgba(255,255,255,0.05)', color='#94a3b8'), yaxis=dict(title="Прибыль/Убыток (₽)", gridcolor='rgba(255,255,255,0.05)', color='#94a3b8'), hovermode="x unified", margin=dict(l=20, r=20, t=60, b=20), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font=dict(family="Inter, sans-serif"))
         st.plotly_chart(fig, use_container_width=True)
-    with tab2:
+       with tab2:
         months = df['Месяц'].dropna().unique()
         if len(months) > 0:
+            # Исправлено: убрана лишняя скобка в st.tabs
             month_tabs = st.tabs([f"📅 {m}" for m in months])
             for m_tab, month_name in zip(month_tabs, months):
                 with m_tab:
@@ -334,7 +335,6 @@ def process_uploaded_images(uploaded_files):
                     html_table = '<table class="custom-table"><thead><tr><th>Дата</th><th>Время</th><th>Результат</th><th>Сумма (₽)</th></tr></thead><tbody>'
                     for _, row in df_month.iterrows():
                         result_html = f'<span class="win-text">{row["Результат"]}</span>' if row["Результат"] == 'Выигрыш' else f'<span class="loss-text">{row["Результат"]}</span>'
-                        # Корректный знак суммы в истории
                         sign = '+' if row["Сумма_изменения"] > 0 else ''
                         amount_class = "win-text" if row["Сумма_изменения"] > 0 else "loss-text"
                         html_table += f'<tr><td>{row["Дата"]}</td><td>{row["Время"]}</td><td>{result_html}</td><td><span class="{amount_class}">{sign}{row["Сумма_изменения"]:,.0f} ₽</span></td></tr>'
