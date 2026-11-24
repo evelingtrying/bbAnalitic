@@ -123,17 +123,12 @@ def process_uploaded_images(uploaded_files):
         img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
         if img is None: continue
 
+        # 🪄 ЛОГИКА КОНСОЛИ: НЕ РЕЖЕМ, ЕСЛИ ВЛЕЗАЕТ В ЛИМИТЫ
         h, w = img.shape[:2]
-        max_height = 8000
-        overlap = 100
-        chunks = []
-        y = 0
-        while y < h:
-            y2 = min(y + max_height, h)
-            chunks.append(img[y:y2, :])
-            if y2 == h:
-                break
-            y = y2 - overlap
+        if h > 25000:
+            chunks = [img[:h//2, :], img[h//2:, :]]
+        else:
+            chunks = [img]
 
         for chunk in chunks:
             gray = cv2.cvtColor(chunk, cv2.COLOR_BGR2GRAY)
@@ -183,7 +178,11 @@ def process_uploaded_images(uploaded_files):
                                 "Результат": result, "Сумма_изменения": amount_val
                             })
                         except ValueError: pass
-    return pd.DataFrame(all_bets_data)
+                        
+    df_res = pd.DataFrame(all_bets_data)
+    if not df_res.empty:
+        df_res = df_res.drop_duplicates(subset=['Дата', 'Время', 'Сумма_изменения'])
+    return df_res
 
 # ==========================================
 # 📊 ОСНОВНАЯ ЛОГИКА
