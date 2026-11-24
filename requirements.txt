@@ -4,3 +4,5 @@ plotly
 opencv-python-headless
 pytesseract
 numpy
+# Установка Tesseract OCR на сервере
+pytesseract[tesseract]
