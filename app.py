@@ -117,7 +117,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 🧠 ФУНКЦИЯ ОБРАБОТКИ СКРИНШОТОВ (OCR) - С БЕЗОПАСНОЙ НАРЕЗКОЙ
+# 🧠 ФУНКЦИЯ ОБРАБОТКИ СКРИНШОТОВ (OCR)
 # ==========================================
 def process_uploaded_images(uploaded_files):
     all_bets_data = []
@@ -128,21 +128,16 @@ def process_uploaded_images(uploaded_files):
 
         h, w = img.shape[:2]
         
-        # 🪄 БЕЗОПАСНАЯ НАРЕЗКА: Tesseract не переваривает высоту > 32767px
-        max_height = 20000
-        overlap = 500
-        
-        if h > max_height:
-            chunks = []
-            y = 0
-            while y < h:
-                y2 = min(y + max_height, h)
-                chunks.append(img[y:y2, :])
-                if y2 == h:
-                    break
-                y = y2 - overlap
-        else:
-            chunks = [img]
+        # 🪄 ИСПРАВЛЕНО: Нарезаем по 8000 пикселей, чтобы после увеличения в 3 раза (24 000) не превышать лимит Tesseract
+        max_height = 8000
+        overlap = 100
+        chunks = []
+        y = 0
+        while y < h:
+            y2 = min(y + max_height, h)
+            chunks.append(img[y:y2, :])
+            if y2 == h: break
+            y = y2 - overlap
 
         for chunk in chunks:
             gray = cv2.cvtColor(chunk, cv2.COLOR_BGR2GRAY)
@@ -152,7 +147,6 @@ def process_uploaded_images(uploaded_files):
             gray = cv2.resize(gray, None, fx=3.0, fy=3.0, interpolation=cv2.INTER_CUBIC)
             _, thresh = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY)
 
-            # Используем --psm 6 для распознавания блоков текста
             d = pytesseract.image_to_data(thresh, lang='rus+eng', config='--psm 6', output_type=Output.DICT)
             n_boxes = len(d['text'])
 
