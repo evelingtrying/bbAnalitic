@@ -117,7 +117,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 🧠 ФУНКЦИЯ ОБРАБОТКИ СКРИНШОТОВ (OCR)
+# 🧠 ФУНКЦИЯ ОБРАБОТКИ СКРИНШОТОВ (OCR) - С БЕЗОПАСНОЙ НАРЕЗКОЙ И OVERLAP 800
 # ==========================================
 def process_uploaded_images(uploaded_files):
     all_bets_data = []
@@ -128,9 +128,10 @@ def process_uploaded_images(uploaded_files):
 
         h, w = img.shape[:2]
         
-        # 🪄 ИСПРАВЛЕНО: Нарезаем по 8000 пикселей, чтобы после увеличения в 3 раза (24 000) не превышать лимит Tesseract
-        max_height = 8000
-        overlap = 100
+        # 🪄 НАРЕЗКА: по 10000 пикселей с перекрытием 800, чтобы не разрывать карточки ставок
+        max_height = 10000
+        overlap = 800
+        
         chunks = []
         y = 0
         while y < h:
@@ -158,7 +159,7 @@ def process_uploaded_images(uploaded_files):
                     date_str, time_str = None, None
 
                     for k in range(n_boxes):
-                        if abs(d['top'][k] - amount_y) < 100 and d['left'][k] < amount_x:
+                        if abs(d['top'][k] - amount_y) < 150 and d['left'][k] < amount_x: # Увеличили допуск по высоте
                             text_k = d['text'][k].lower()
                             if 'транзакц' in text_k or 'перевод' in text_k:
                                 is_transaction = True; break 
@@ -182,14 +183,20 @@ def process_uploaded_images(uploaded_files):
                         try:
                             amount_val = int(float(amount_match.group(1)))
                             result = "Выигрыш" if amount_val > 0 else "Проигрыш"
+                            
+                            # Очищаем строки от случайных пробелов, чтобы дубликаты точно совпали
+                            clean_date = date_str.strip()
+                            clean_time = time_str.strip()
+                            
                             all_bets_data.append({
-                                "Дата": date_str, "Время": time_str, 
+                                "Дата": clean_date, "Время": clean_time, 
                                 "Результат": result, "Сумма_изменения": amount_val
                             })
                         except ValueError: pass
                         
     df_res = pd.DataFrame(all_bets_data)
     if not df_res.empty:
+        # Жесткое удаление дубликатов
         df_res = df_res.drop_duplicates(subset=['Дата', 'Время', 'Сумма_изменения'])
     return df_res
 
