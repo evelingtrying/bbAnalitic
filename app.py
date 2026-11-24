@@ -22,6 +22,7 @@ st.markdown("""
     .stApp { background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%); color: #f8fafc; }
     @keyframes fadeInUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
 
+    /* --- КАРТОЧКИ --- */
     .custom-card {
         background: rgba(255, 255, 255, 0.03);
         border: 1px solid rgba(255, 255, 255, 0.08);
@@ -47,12 +48,14 @@ st.markdown("""
     .card-left { margin-top: 25px; opacity: 0.85; }
     .card-right { margin-top: 50px; opacity: 0.7; }
 
+    /* --- РАСКРЫВАЮЩИЕСЯ ОКНА --- */
     .streamlit-expanderHeader { background-color: rgba(255, 255, 255, 0.05) !important; border-radius: 8px !important; border: 1px solid rgba(255, 255, 255, 0.1) !important; font-size: 14px !important; color: #94a3b8 !important; margin-top: 5px; }
     .streamlit-expanderHeader:hover { background-color: rgba(255, 255, 255, 0.1) !important; color: #ffffff !important; }
     .streamlit-expanderContent { background-color: rgba(0, 0, 0, 0.2) !important; border-radius: 8px !important; border: 1px solid rgba(255, 255, 255, 0.05) !important; color: #e2e8f0 !important; }
 
     h1 { background: linear-gradient(to right, #818cf8, #c084fc); -webkit-background-clip: text; -webkit-text-fill-color: transparent; font-weight: 800 !important; text-align: center; padding-bottom: 20px; animation: fadeInUp 0.5s ease-out; }
     
+    /* --- ВКЛАДКИ --- */
     .stTabs [data-baseweb="tab-list"] { gap: 15px; justify-content: center; background: rgba(255, 255, 255, 0.02); padding: 10px 20px; border-radius: 50px; width: fit-content; margin: 0 auto; border: 1px solid rgba(255, 255, 255, 0.05); backdrop-filter: blur(5px); }
     .stTabs [data-baseweb="tab"] { height: 45px; white-space: pre-wrap; background-color: transparent; border-radius: 30px; color: #94a3b8; font-weight: 600; font-size: 15px; padding: 0 24px; transition: all 0.4s cubic-bezier(0.25, 0.8, 0.25, 1); border: none; }
     .stTabs [data-baseweb="tab"]:hover { color: #e2e8f0; background-color: rgba(255, 255, 255, 0.05); }
@@ -60,12 +63,54 @@ st.markdown("""
     .stTabs [data-baseweb="tab-highlight"] { display: none; }
     .stTabs [data-baseweb="tab-border"] { display: none; }
 
+    /* --- ТАБЛИЦА --- */
     .custom-table { width: 100%; border-collapse: collapse; margin-top: 10px; background: rgba(255, 255, 255, 0.02); border-radius: 12px; overflow: hidden; }
     .custom-table th, .custom-table td { padding: 12px 15px; text-align: left; border-bottom: 1px solid rgba(255, 255, 255, 0.05); }
     .custom-table th { background: rgba(255, 255, 255, 0.05); color: #94a3b8; font-weight: 600; text-transform: uppercase; font-size: 12px; letter-spacing: 1px; }
     .custom-table tr:hover { background: rgba(255, 255, 255, 0.05); }
     .win-text { color: #10b981; font-weight: bold; }
     .loss-text { color: #ef4444; font-weight: bold; }
+
+    /* --- ДИЗАЙН БОКОВОЙ ПАНЕЛИ --- */
+    [data-testid="stSidebar"] {
+        background: linear-gradient(180deg, #0f172a 0%, #1e1b4b 100%);
+        border-right: 1px solid rgba(255, 255, 255, 0.05);
+    }
+    [data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3 {
+        background: linear-gradient(to right, #818cf8, #c084fc);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        font-weight: 800;
+    }
+    .stButton > button {
+        background: linear-gradient(135deg, rgba(99, 102, 241, 0.8) 0%, rgba(192, 132, 252, 0.8) 100%) !important;
+        color: white !important;
+        border: none !important;
+        border-radius: 12px !important;
+        padding: 10px 20px !important;
+        font-weight: 600 !important;
+        width: 100%;
+        transition: all 0.3s ease;
+        box-shadow: 0 4px 15px rgba(99, 102, 241, 0.2);
+    }
+    .stButton > button:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 6px 20px rgba(99, 102, 241, 0.4);
+        filter: brightness(1.1);
+    }
+    .btn-danger > button {
+        background: linear-gradient(135deg, rgba(239, 68, 68, 0.8) 0%, rgba(220, 38, 38, 0.8) 100%) !important;
+        box-shadow: 0 4px 15px rgba(239, 68, 68, 0.2);
+    }
+    .btn-danger > button:hover {
+        box-shadow: 0 6px 20px rgba(239, 68, 68, 0.4);
+    }
+    [data-testid="stFileUploader"] {
+        background: rgba(255, 255, 255, 0.02);
+        border: 1px dashed rgba(255, 255, 255, 0.2);
+        border-radius: 12px;
+        padding: 10px;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -75,12 +120,10 @@ st.markdown("""
 def process_uploaded_images(uploaded_files):
     all_bets_data = []
     for uploaded_file in uploaded_files:
-        # Читаем картинку из памяти браузера
         file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
         img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
         if img is None: continue
 
-        # Режем, если большая
         h, w = img.shape[:2]
         max_height = 8000
         chunks = [img[y:y+max_height, :] for y in range(0, h, max_height - 100)]
@@ -136,8 +179,8 @@ st.markdown("<h1>💎 BetBoom Analytics</h1>", unsafe_allow_html=True)
 
 # Боковая панель для загрузки данных
 with st.sidebar:
-    st.markdown("### ⚙️ Управление данными")
-    st.info("Загрузите скриншоты истории ставок, чтобы обновить статистику.")
+    st.markdown("### ⚙️ Управление")
+    st.markdown("Загрузите скриншоты, чтобы обновить статистику.")
     
     uploaded_files = st.file_uploader("Выберите скриншоты", type=['png', 'jpg', 'jpeg'], accept_multiple_files=True)
     
@@ -146,26 +189,38 @@ with st.sidebar:
             with st.spinner('Нейросеть читает ваши ставки... Это займет около 10-20 секунд...'):
                 new_df = process_uploaded_images(uploaded_files)
                 if not new_df.empty:
-                    # Сохраняем в сессию (временную память сайта)
                     if 'df' not in st.session_state:
                         st.session_state.df = new_df
                     else:
-                        # Склеиваем старые и новые данные, удаляем дубликаты
                         combined = pd.concat([st.session_state.df, new_df])
                         st.session_state.df = combined.drop_duplicates(subset=['Дата', 'Время', 'Сумма_изменения'])
-                    st.success("Данные успешно обновлены!")
+                    st.success("Данные обновлены!")
                 else:
-                    st.error("Не удалось распознать ставки на скриншотах. Попробуйте сделать их более четкими.")
+                    st.error("Не удалось распознать ставки. Попробуйте еще раз.")
         else:
-            st.warning("Пожалуйста, сначала выберите файлы.")
+            st.warning("Пожалуйста, выберите файлы.")
 
     st.markdown("---")
-    st.markdown("### 💾 Сохранение базы")
+    st.markdown("### 💾 База данных")
+    
     if 'df' in st.session_state and not st.session_state.df.empty:
-        # Кнопка для скачивания базы
         csv = st.session_state.df.to_csv(sep=';', index=False).encode('utf-8-sig')
-        st.download_button(label="📥 Скачать базу (CSV)", data=csv, file_name='bets_all.csv', mime='text/csv')
-        st.caption("Скачивайте этот файл, чтобы не потерять данные при перезапуске сервера.")
+        st.download_button(
+            label="📥 Скачать базу (CSV)", 
+            data=csv, 
+            file_name='bets_all.csv', 
+            mime='text/csv'
+        )
+        
+        # Кнопка очистки
+        st.markdown('<div class="btn-danger">', unsafe_allow_html=True)
+        if st.button("🗑️ Очистить все данные"):
+            st.session_state.df = pd.DataFrame()
+            st.success("База данных очищена! Загрузите новые скриншоты.")
+            st.rerun()
+        st.markdown('</div>', unsafe_allow_html=True)
+        
+        st.caption("Не забудьте скачать CSV, чтобы не потерять данные при перезапуске сервера.")
 
 # Если данные есть в памяти, показываем дашборд
 if 'df' in st.session_state and not st.session_state.df.empty:
@@ -281,5 +336,4 @@ if 'df' in st.session_state and not st.session_state.df.empty:
             st.markdown(f'<div class="custom-card" style="margin-top: 10px;"><div class="card-title">🎯 Самая частая ставка</div><div class="card-value" style="color: #c084fc;">{most_common_bet:,.0f} ₽</div></div>', unsafe_allow_html=True)
 
 else:
-    # Если база пустая
     st.info("👈 Добро пожаловать! Чтобы начать, загрузите скриншоты истории ставок в левой панели.")
