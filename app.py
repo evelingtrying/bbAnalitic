@@ -102,7 +102,7 @@ st.markdown("""
     }
     .btn-danger > button {
         background: linear-gradient(135deg, rgba(239, 68, 68, 0.8) 0%, rgba(220, 38, 38, 0.8) 100%) !important;
-        box-shadow: 0 4px fifteenpx rgba(239, 68, 68, 0.2);
+        box-shadow: 0 4px 15px rgba(239, 68, 68, 0.2);
     }
     .btn-danger > button:hover {
         box-shadow: 0 6px 20px rgba(239, 68, 68, 0.4);
@@ -148,8 +148,7 @@ def process_uploaded_images(uploaded_files):
             gray = cv2.resize(gray, None, fx=3.0, fy=3.0, interpolation=cv2.INTER_CUBIC)
             _, thresh = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY)
 
-            # Добавлен oem=3 для стабильного распознавания
-            d = pytesseract.image_to_data(thresh, lang='rus+eng', config='--psm 6 oem=3', output_type=Output.DICT)
+            d = pytesseract.image_to_data(thresh, lang='rus+eng', config='--psm 6', output_type=Output.DICT)
             n_boxes = len(d['text'])
 
             for j in range(n_boxes):
@@ -160,7 +159,7 @@ def process_uploaded_images(uploaded_files):
                     date_str, time_str = None, None
 
                     for k in range(n_boxes):
-                        if abs(d['top'][k] - amount_y) < 150 and d['left'][k] < amount_x:
+                        if abs(d['top'][k] - amount_y) < 150 and d['left'][k] < amount_x: # Увеличили допуск по высоте
                             text_k = d['text'][k].lower()
                             if 'транзакц' in text_k or 'перевод' in text_k:
                                 is_transaction = True; break 
@@ -177,19 +176,15 @@ def process_uploaded_images(uploaded_files):
                     crop = cv2.resize(crop, None, fx=5.0, fy=5.0, interpolation=cv2.INTER_CUBIC)
                     amount_text = pytesseract.image_to_string(crop, lang='rus+eng', config='--psm 7').strip()
                     
-                    # Нормализация суммы для корректного поиска дублей
                     amount_text = amount_text.replace(' ', '').replace(',', '.')
                     amount_match = re.search(r'([+-]\d+(?:\.\d+)?)', amount_text)
                     
                     if amount_match:
                         try:
                             amount_val = int(float(amount_match.group(1)))
-                            # Фильтр аномалий OCR
-                            if amount_val == 0 or abs(amount_val) > 1000000:
-                                continue
-                                
                             result = "Выигрыш" if amount_val > 0 else "Проигрыш"
                             
+                            # Очищаем строки от случайных пробелов, чтобы дубликаты точно совпали
                             clean_date = date_str.strip()
                             clean_time = time_str.strip()
                             
@@ -201,7 +196,7 @@ def process_uploaded_images(uploaded_files):
                         
     df_res = pd.DataFrame(all_bets_data)
     if not df_res.empty:
-        # Жесткое удаление дубликатов с учетом нормализованной суммы
+        # Жесткое удаление дубликатов
         df_res = df_res.drop_duplicates(subset=['Дата', 'Время', 'Сумма_изменения'])
     return df_res
 
@@ -261,20 +256,14 @@ if 'df' in st.session_state and not st.session_state.df.empty:
     current_year = datetime.now().year 
     months_dict = {'января': '01', 'февраля': '02', 'марта': '03', 'апреля': '04', 'мая': '05', 'июня': '06', 'июля': '07', 'августа': '08', 'сентября': '09', 'октября': '10', 'ноября': '11', 'декабря': '12'}
     
-    # 🛠️ ФУНКЦИЯ ОЧИСТКИ ДАТЫ (на уровне основного кода)
     def clean_date(date_str):
         date_str = str(date_str).lower().strip()
         for rus_month, num_month in months_dict.items():
             if rus_month in date_str:
                 date_str = date_str.replace(rus_month, num_month).replace(' ', '.')
                 return f"{date_str}.{current_year}"
-        # Если месяц не указан (формат ДД.ММ), подставляем текущий месяц
-        if re.match(r'^\d{1,2}\.\d{1,2}$', date_str):
-            current_month_num = datetime.now().strftime('%m')
-            current_month_name = datetime.now().strftime('%B')
-            return f"{date_str}.{current_month_num}.{current_year}"
         return date_str
-    
+
     df['Дата_парсинг'] = df['Дата'].apply(clean_date)
     df['Дата_парсинг'] = pd.to_datetime(df['Дата_парсинг'], format='%d.%m.%Y', errors='coerce')
     df['Время_парсинг'] = pd.to_datetime(df['Время'], format='%H:%M', errors='coerce').dt.time
@@ -292,7 +281,7 @@ if 'df' in st.session_state and not st.session_state.df.empty:
     wins = len(df[df['Результат'] == 'Выигрыш'])
     winrate = (wins / total_bets) * 100 if total_bets > 0 else 0
     total_pnl = df['Сумма_изменения'].sum()
-    avg_bet = abs(df[df['Сумма_изменения'] < 0]['Сумма_изменения'].mean()) if not df[df['Сумма_изменения'] < 0].empty else 0
+    avg_bet = abs(df[df['Сумма_изменения'] < 0]['Сумма_изменения'].mean())
 
     with col1:
         st.markdown(f'<div class="custom-card card-left"><div class="card-title">Всего ставок</div><div class="card-value">{total_bets:,}</div></div>', unsafe_allow_html=True)
@@ -335,9 +324,8 @@ if 'df' in st.session_state and not st.session_state.df.empty:
                     html_table = '<table class="custom-table"><thead><tr><th>Дата</th><th>Время</th><th>Результат</th><th>Сумма (₽)</th></tr></thead><tbody>'
                     for _, row in df_month.iterrows():
                         result_html = f'<span class="win-text">{row["Результат"]}</span>' if row["Результат"] == 'Выигрыш' else f'<span class="loss-text">{row["Результат"]}</span>'
-                        sign = '+' if row["Сумма_изменения"] > 0 else ''
                         amount_class = "win-text" if row["Сумма_изменения"] > 0 else "loss-text"
-                        html_table += f'<tr><td>{row["Дата"]}</td><td>{row["Время"]}</td><td>{result_html}</td><td><span class="{amount_class}">{sign}{row["Сумма_изменения"]:,.0f} ₽</span></td></tr>'
+                        html_table += f'<tr><td>{row["Дата"]}</td><td>{row["Время"]}</td><td>{result_html}</td><td><span class="{amount_class}">{row["Сумма_изменения"]:,.0f} ₽</span></td></tr>'
                     html_table += '</tbody></table>'
                     st.markdown(html_table, unsafe_allow_html=True)
         else:
