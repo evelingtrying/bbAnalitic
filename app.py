@@ -7,7 +7,6 @@ import pytesseract
 from pytesseract import Output
 import numpy as np
 import re
-import io
 
 # Настройка страницы
 st.set_page_config(page_title="BetBoom Analytics", page_icon="💎", layout="wide")
@@ -115,17 +114,15 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 🧠 ФУНКЦИЯ ОБРАБОТКИ СКРИНШОТОВ (OCR) - ВЕРНУТА КОНСОЛЬНАЯ ЛОГИКА
+# 🧠 ФУНКЦИЯ ОБРАБОТКИ СКРИНШОТОВ (OCR)
 # ==========================================
 def process_uploaded_images(uploaded_files):
     all_bets_data = []
     for uploaded_file in uploaded_files:
-        # Читаем картинку из памяти браузера
         file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
         img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
         if img is None: continue
 
-        # Нарезаем картинку на большие полосы по 8000 пикселей (как в консольной версии)
         h, w = img.shape[:2]
         max_height = 8000
         overlap = 100
@@ -143,7 +140,6 @@ def process_uploaded_images(uploaded_files):
             if np.mean(gray) < 128: 
                 gray = cv2.bitwise_not(gray)
                 
-            # Увеличение в 3 раза (как было)
             gray = cv2.resize(gray, None, fx=3.0, fy=3.0, interpolation=cv2.INTER_CUBIC)
             _, thresh = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY)
 
@@ -167,7 +163,6 @@ def process_uploaded_images(uploaded_files):
 
                     if is_transaction or not (date_str and time_str): continue
 
-                    # Вырезаем сумму "лупой"
                     pad = 10
                     y1, y2_amt = max(0, amount_y-pad), min(thresh.shape[0], amount_y+amount_h+pad)
                     x1, x2_amt = max(0, amount_x-pad), min(thresh.shape[1], amount_x+amount_w+pad)
@@ -189,6 +184,7 @@ def process_uploaded_images(uploaded_files):
                             })
                         except ValueError: pass
     return pd.DataFrame(all_bets_data)
+
 # ==========================================
 # 📊 ОСНОВНАЯ ЛОГИКА
 # ==========================================
@@ -229,7 +225,6 @@ with st.sidebar:
             mime='text/csv'
         )
         
-        # Кнопка очистки
         st.markdown('<div class="btn-danger">', unsafe_allow_html=True)
         if st.button("🗑️ Очистить все данные"):
             st.session_state.df = pd.DataFrame()
