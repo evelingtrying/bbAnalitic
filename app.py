@@ -8,6 +8,9 @@ from pytesseract import Output
 import numpy as np
 import re
 
+# 🪄 ВАЖНО: Указываем путь к Tesseract для облачной среды Linux
+pytesseract.pytesseract.tesseract_cmd = '/usr/bin/tesseract'
+
 # Настройка страницы
 st.set_page_config(page_title="BetBoom Analytics", page_icon="💎", layout="wide")
 
@@ -123,7 +126,6 @@ def process_uploaded_images(uploaded_files):
         img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
         if img is None: continue
 
-        # 🪄 ЛОГИКА КОНСОЛИ: НЕ РЕЖЕМ, ЕСЛИ ВЛЕЗАЕТ В ЛИМИТЫ
         h, w = img.shape[:2]
         if h > 25000:
             chunks = [img[:h//2, :], img[h//2:, :]]
@@ -138,7 +140,8 @@ def process_uploaded_images(uploaded_files):
             gray = cv2.resize(gray, None, fx=3.0, fy=3.0, interpolation=cv2.INTER_CUBIC)
             _, thresh = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY)
 
-            d = pytesseract.image_to_data(thresh, lang='rus+eng', config='--psm 4', output_type=Output.DICT)
+            # 🪄 ИЗМЕНЕНО: Используем --psm 6 для лучшей совместимости
+            d = pytesseract.image_to_data(thresh, lang='rus+eng', config='--psm 6', output_type=Output.DICT)
             n_boxes = len(d['text'])
 
             for j in range(n_boxes):
