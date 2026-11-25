@@ -18,36 +18,22 @@ def _get_engine() -> RapidOCR:
         _ocr_engine = RapidOCR()
     return _ocr_engine
 
-MONTHS = {
-    "янв": 1, "фев": 2, "мар": 3, "апр": 4, "мая": 5, "май": 5, "ма": 5,
-    "июн": 6, "июл": 7, "авг": 8, "сен": 9, "сент": 9, "окт": 10,
-    "ноя": 11, "дек": 12,
-}
+def _extract_amount(text: str) -> float | None:
+    # Ищем плюс/минус, цифры и возможные копейки. Игнорируем буквы (P, р, О и т.д.)
+    match = re.search(r"([+-])\s*(\d+(?:[.,]\d{1,2})?)", text)
+    if not match:
+        return None
+    try:
+        val = float(match.group(2).replace(",", "."))
+        return -val if match.group(1) == '-' else val
+    except ValueError:
+        return None
 
-def _parse_date_string(text: str, year: int) -> str | None:
-    lowered = text.lower().replace("ё", "е")
-    # Лечим латинские буквы в кириллице
-    trans = str.maketrans('ceoapxykmthbCEOPAXYKMTHB', 'сеоархукмтнвСЕОАРХУКМТНВ')
-    lowered = lowered.translate(trans)
-
-    if "сегодня" in lowered:
-        return datetime.now().date().strftime("%d.%m.%Y")
-    if "вчера" in lowered:
-        return (datetime.now() - timedelta(days=1)).date().strftime("%d.%m.%Y")
-
-    date_match = re.search(r"\b(\d{1,2})\s+([a-zа-яё]+)", lowered)
-    if date_match:
-        day = int(date_match.group(1))
-        month_str = date_match.group(2)
-        for m_name, m_num in MONTHS.items():
-            if month_str.startswith(m_name):
-                try:
-                    d = datetime(year, m_num, day)
-                    return d.strftime("%d.%m.%Y")
-                except ValueError:
-                    pass
+def _extract_time(text: str) -> str | None:
+    match = re.search(r"([01]?\d|2[0-3])[:.,-]\s*([0-5]\d)", text)
+    if match:
+        return f"{int(match.group(1)):02d}:{match.group(2)}"
     return None
-
 
 def process_image_bytes(
     file_name: str,
@@ -78,13 +64,13 @@ def process_image_bytes(
 
     height, width = image.shape[:2]
     
-    # 🪄 УВЕЛИЧЕНИЕ: Если картинка маленькая, растягиваем её до 1500px
+    # 🪄 УВЕЛИЧЕНИЕ: Растягиваем картинку до 1500px
     if width < 1500:
         scale = 1500 / width
         image = cv2.resize(image, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
         height, width = image.shape[:2]
 
-    # 🪄 УЛУЧШЕНИЕ КАРТИНКИ: Контраст + инверсия для темной темы
+    # 🪄 УЛУЧШЕНИЕ: Выравниваем контраст и инвертируем цвета
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
     gray = clahe.apply(gray)
@@ -108,10 +94,9 @@ def process_image_bytes(
 
     boxes = ocr_output.boxes
     txts = ocr_output.txts
-    
     result["diagnostics"]["raw_text"] = "\n".join(txts)
 
-    # Собираем блоки текста с их координатами
+    # Собираем все блоки текста с координатами
     blocks = []
     for i in range(len(txts)):
         box = boxes[i]
@@ -119,64 +104,59 @@ def process_image_bytes(
             "text": txts[i],
             "x": float(np.mean(box[:, 0])),
             "y": float(np.mean(box[:, 1])),
-            "text_lower": txts[i].lower().replace("ё", "е")
+            "h": float(np.max(box[:, 1]) - np.min(box[:, 1]))
         })
 
     parsed_bets = []
-    
-    # 🪄 2D ПАРСИНГ: Ищем суммы и смотрим, что находится рядом
+    today_str = datetime.now().strftime("%d.%m.%Y")
+
+    # 🪄 ИЩЕМ СУММЫ И ИЩЕМ К НИМ БЛИЖАЙШЕЕ ВРЕМЯ
     for b in blocks:
-        # 1. Ищем сумму (плюс или минус с цифрами)
-        amount_match = re.search(r"([+-])\s*(\d+(?:[.,]\d{1,2})?)", b["text"])
-        if not amount_match:
-            continue
-            
-        sign = amount_match.group(1)
-        try:
-            amount = float(amount_match.group(2).replace(",", "."))
-            if sign == '-':
-                amount = -amount
-        except ValueError:
+        amount = _extract_amount(b["text"])
+        if amount is None:
             continue
 
-        # 2. Ищем контекст вокруг этой суммы (в пределах 120 пикселей по Y)
+        # Нашли сумму. Теперь ищем время на этой же линии (или очень близко)
         y_current = b["y"]
-        context_blocks = [other for other in blocks if abs(other["y"] - y_current) < 120]
-        
+        closest_time = None
+        min_dist = float('inf')
+
+        for other in blocks:
+            if other is b:
+                continue
+            t = _extract_time(other["text"])
+            if t:
+                dist = abs(other["y"] - y_current)
+                if dist < min_dist and dist < 150: # В пределах 150 пикселей
+                    min_dist = dist
+                    closest_time = t
+
+        if not closest_time:
+            result["diagnostics"]["skipped_cards"] += 1
+            result["diagnostics"]["failed_cards"].append(f"Сумма {amount} без времени: {b['text']}")
+            continue
+
         # Проверяем, нет ли рядом слова "Транзакция"
-        is_transaction = any("транзакц" in cb["text_lower"] for cb in context_blocks)
-        if is_transaction:
+        is_tx = False
+        for other in blocks:
+            if abs(other["y"] - y_current) < 100:
+                if "транзакц" in other["text"].lower():
+                    is_tx = True
+                    break
+
+        if is_tx:
             result["diagnostics"]["ignored_transactions"] += 1
             continue
 
-        # Ищем дату и время в этом контексте
-        date_val = None
-        time_val = None
-        
-        for cb in context_blocks:
-            if not date_val:
-                parsed_d = _parse_date_string(cb["text"], datetime.now().year)
-                if parsed_d:
-                    date_val = parsed_d
-            
-            if not time_val:
-                time_match = re.search(r"([01]?\d|2[0-3])[:.,]\s*([0-5]\d)", cb["text"])
-                if time_match:
-                    time_val = f"{int(time_match.group(1)):02d}:{time_match.group(2)}"
+        # Если всё ок — добавляем ставку
+        parsed_bets.append({
+            "Дата": today_str, # Если OCR не увидел "Сегодня", ставим текущую дату
+            "Время": closest_time,
+            "Результат": "Выигрыш" if amount > 0 else "Проигрыш",
+            "Сумма_изменения": amount
+        })
 
-        # Если нашли и дату, и время — это ставка!
-        if date_val and time_val:
-            parsed_bets.append({
-                "Дата": date_val,
-                "Время": time_val,
-                "Результат": "Выигрыш" if amount > 0 else "Проигрыш",
-                "Сумма_изменения": amount
-            })
-        else:
-            result["diagnostics"]["skipped_cards"] += 1
-            result["diagnostics"]["failed_cards"].append(f"Сумма: {b['text']} | Контекст: {' '.join(cb['text'] for cb in context_blocks)}")
-
-    # Удаляем дубликаты (если одна и та же сумма распозналась дважды)
+    # Удаляем дубликаты (если одна и та же ставка спарсилась дважды)
     unique_bets = []
     for bet in parsed_bets:
         if bet not in unique_bets:
