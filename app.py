@@ -4,7 +4,6 @@ import plotly.graph_objects as go
 from datetime import datetime
 import cv2
 import pytesseract
-from pytesseract import Output
 import numpy as np
 import re
 
@@ -117,19 +116,22 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 🧠 ФУНКЦИЯ ОБРАБОТКИ СКРИНШОТОВ (OCR) - С БЕЗОПАСНОЙ НАРЕЗКОЙ И OVERLAP 800
+# 🧠 ФУНКЦИЯ ОБРАБОТКИ СКРИНШОТОВ (OCR)
 # ==========================================
 def process_uploaded_images(uploaded_files):
     all_bets_data = []
-    for uploaded_file in uploaded_files:
+    progress_bar = st.progress(0)
+    total_files = len(uploaded_files)
+    
+    for idx, uploaded_file in enumerate(uploaded_files):
         file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
         img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
         if img is None: continue
 
         h, w = img.shape[:2]
         
-        # 🪄 НАРЕЗКА: по 10000 пикселей с перекрытием 800, чтобы не разрывать карточки ставок
-        max_height = 10000
+        # 🪄 Нарезка: по 5000 пикселей с перекрытием 800, чтобы Tesseract не сходил с ума от гигантских картинок
+        max_height = 5000
         overlap = 800
         
         chunks = []
@@ -140,63 +142,79 @@ def process_uploaded_images(uploaded_files):
             if y2 == h: break
             y = y2 - overlap
 
-        for chunk in chunks:
+        for chunk_idx, chunk in enumerate(chunks):
             gray = cv2.cvtColor(chunk, cv2.COLOR_BGR2GRAY)
+            
+            # Инверсия для темной темы
             if np.mean(gray) < 128: 
                 gray = cv2.bitwise_not(gray)
                 
-            gray = cv2.resize(gray, None, fx=3.0, fy=3.0, interpolation=cv2.INTER_CUBIC)
-            _, thresh = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY)
+            # Увеличение x2 (оптимально для OCR)
+            gray = cv2.resize(gray, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
+            
+            # Бинаризация Оцу (лучше работает с текстом)
+            _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
 
-            d = pytesseract.image_to_data(thresh, lang='rus+eng', config='--psm 6', output_type=Output.DICT)
-            n_boxes = len(d['text'])
+            # Читаем как единый блок текста (psm 6)
+            text = pytesseract.image_to_string(thresh, lang='rus+eng', config='--psm 6')
 
-            for j in range(n_boxes):
-                word = d['text'][j].strip()
-                if ('+' in word or '-' in word) and any(c.isdigit() for c in word):
-                    amount_x, amount_y, amount_w, amount_h = d['left'][j], d['top'][j], d['width'][j], d['height'][j]
-                    is_transaction = False
-                    date_str, time_str = None, None
+            lines = text.split('\n')
+            current_date = None
+            current_time = None
+            prev_line = ""
 
-                    for k in range(n_boxes):
-                        if abs(d['top'][k] - amount_y) < 150 and d['left'][k] < amount_x: # Увеличили допуск по высоте
-                            text_k = d['text'][k].lower()
-                            if 'транзакц' in text_k or 'перевод' in text_k:
-                                is_transaction = True; break 
-                            if re.match(r'^\d{2}:\d{2}$', d['text'][k]): time_str = d['text'][k]
-                            elif re.match(r'^\d{1,2}$', d['text'][k]) and k+1 < n_boxes and re.match(r'^[А-Яа-я]+$', d['text'][k+1]): date_str = f"{d['text'][k]} {d['text'][k+1]}"
+            for line in lines:
+                line = line.strip()
+                if not line: continue
 
-                    if is_transaction or not (date_str and time_str): continue
+                # Поиск даты (например: "24 ноября")
+                date_match = re.search(r'(\d{1,2}\s+[А-Яа-я]+)', line)
+                if date_match:
+                    current_date = date_match.group(1)
 
-                    pad = 10
-                    y1, y2_amt = max(0, amount_y-pad), min(thresh.shape[0], amount_y+amount_h+pad)
-                    x1, x2_amt = max(0, amount_x-pad), min(thresh.shape[1], amount_x+amount_w+pad)
-                    
-                    crop = thresh[y1:y2_amt, x1:x2_amt]
-                    crop = cv2.resize(crop, None, fx=5.0, fy=5.0, interpolation=cv2.INTER_CUBIC)
-                    amount_text = pytesseract.image_to_string(crop, lang='rus+eng', config='--psm 7').strip()
-                    
-                    amount_text = amount_text.replace(' ', '').replace(',', '.')
-                    amount_match = re.search(r'([+-]\d+(?:\.\d+)?)', amount_text)
-                    
-                    if amount_match:
+                # Поиск времени (например: "19:25")
+                time_match = re.search(r'(\d{2}:\d{2})', line)
+                if time_match:
+                    current_time = time_match.group(1)
+
+                # Поиск суммы (например: "+1 038 ₽" или "-500 ₽")
+                # Ищем знак + или -, затем цифры и пробелы
+                amount_match = re.search(r'([+-]\s*\d[\d\s]*)(?:\s*[₽pP])?', line)
+                
+                if amount_match and current_date and current_time:
+                    # Очищаем сумму от мусора
+                    amount_str = amount_match.group(1).replace(' ', '').replace('₽', '').replace('p', '').replace('P', '')
+                    amount_str = re.sub(r'[^\d+-]', '', amount_str)
+
+                    if amount_str and (amount_str[0] in '+-'):
                         try:
-                            amount_val = int(float(amount_match.group(1)))
-                            result = "Выигрыш" if amount_val > 0 else "Проигрыш"
+                            amount_val = int(amount_str)
                             
-                            # Очищаем строки от случайных пробелов, чтобы дубликаты точно совпали
-                            clean_date = date_str.strip()
-                            clean_time = time_str.strip()
-                            
-                            all_bets_data.append({
-                                "Дата": clean_date, "Время": clean_time, 
-                                "Результат": result, "Сумма_изменения": amount_val
-                            })
-                        except ValueError: pass
-                        
+                            # Проверка на транзакции (выводы/пополнения)
+                            is_transaction = False
+                            combined_text = (prev_line + " " + line).lower()
+                            for kw in ['транзакц', 'перевод', 'вывод', 'пополнение', 'депозит']:
+                                if kw in combined_text:
+                                    is_transaction = True
+                                    break
+
+                            if not is_transaction:
+                                all_bets_data.append({
+                                    "Дата": current_date.strip(), 
+                                    "Время": current_time.strip(), 
+                                    "Результат": "Выигрыш" if amount_val > 0 else "Проигрыш", 
+                                    "Сумма_изменения": amount_val
+                                })
+                        except ValueError: 
+                            pass
+                prev_line = line
+
+        # Обновляем прогресс бар
+        progress_bar.progress((idx + 1) / total_files)
+
     df_res = pd.DataFrame(all_bets_data)
     if not df_res.empty:
-        # Жесткое удаление дубликатов
+        # Жесткое удаление дубликатов (на случай перекрытия чанков)
         df_res = df_res.drop_duplicates(subset=['Дата', 'Время', 'Сумма_изменения'])
     return df_res
 
@@ -222,7 +240,8 @@ with st.sidebar:
                     else:
                         combined = pd.concat([st.session_state.df, new_df])
                         st.session_state.df = combined.drop_duplicates(subset=['Дата', 'Время', 'Сумма_изменения'])
-                    st.success("Данные обновлены!")
+                    st.success(f"Данные обновлены! Распознано ставок: {len(new_df)}")
+                    st.rerun()
                 else:
                     st.error("Не удалось распознать ставки. Попробуйте еще раз.")
         else:
@@ -281,7 +300,7 @@ if 'df' in st.session_state and not st.session_state.df.empty:
     wins = len(df[df['Результат'] == 'Выигрыш'])
     winrate = (wins / total_bets) * 100 if total_bets > 0 else 0
     total_pnl = df['Сумма_изменения'].sum()
-    avg_bet = abs(df[df['Сумма_изменения'] < 0]['Сумма_изменения'].mean())
+    avg_bet = abs(df[df['Сумма_изменения'] < 0]['Сумма_изменения'].mean()) if not df[df['Сумма_изменения'] < 0].empty else 0
 
     with col1:
         st.markdown(f'<div class="custom-card card-left"><div class="card-title">Всего ставок</div><div class="card-value">{total_bets:,}</div></div>', unsafe_allow_html=True)
