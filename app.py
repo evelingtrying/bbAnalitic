@@ -4,6 +4,7 @@ import plotly.graph_objects as go
 from datetime import datetime, timedelta
 import cv2
 import pytesseract
+from pytesseract import Output
 import numpy as np
 import re
 
@@ -123,21 +124,18 @@ def process_uploaded_images(uploaded_files):
     total_files = len(uploaded_files)
     progress_bar = st.progress(0)
     status_text = st.empty()
-    error_logs = []
     
     for idx, uploaded_file in enumerate(uploaded_files):
         status_text.text(f"Обработка файла {idx+1} из {total_files}...")
         file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
         img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
-        if img is None: 
-            error_logs.append(f"Файл {uploaded_file.name}: не удалось прочитать изображение.")
-            continue
+        if img is None: continue
 
         h, w = img.shape[:2]
         
-        # Нарезка на куски по 4000 пикселей с перекрытием 600
-        max_height = 4000
-        overlap = 600
+        # Нарезка на куски по 3000 пикселей с перекрытием 500
+        max_height = 3000
+        overlap = 500
         
         chunks = []
         y = 0
@@ -152,25 +150,40 @@ def process_uploaded_images(uploaded_files):
 
         for chunk in chunks:
             gray = cv2.cvtColor(chunk, cv2.COLOR_BGR2GRAY)
-            gray = cv2.resize(gray, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
+            
+            # 🪄 ОГРОМНОЕ УВЕЛИЧЕНИЕ для мелкого текста (х3)
+            gray = cv2.resize(gray, None, fx=3.0, fy=3.0, interpolation=cv2.INTER_CUBIC)
 
             try:
-                text = pytesseract.image_to_string(gray, lang='rus+eng', config='--psm 6')
+                # image_to_data позволяет получить координаты слов, чтобы правильно собрать строку
+                d = pytesseract.image_to_data(gray, lang='rus+eng', config='--psm 6', output_type=Output.DICT)
             except Exception as e:
-                error_logs.append(f"Ошибка Tesseract: {str(e)}")
                 continue
 
-            lines = text.split('\n')
-            for i, line in enumerate(lines):
-                line = line.strip()
-                if not line: continue
-                lower_line = line.lower()
+            n_boxes = len(d['text'])
+            lines = {}
+            
+            # Группируем слова в строки
+            for i in range(n_boxes):
+                if int(d['conf'][i]) > 20 and d['text'][i].strip():
+                    key = (d['block_num'][i], d['par_num'][i], d['line_num'][i])
+                    if key not in lines:
+                        lines[key] = []
+                    lines[key].append({
+                        'text': d['text'][i],
+                        'left': d['left'][i]
+                    })
 
-                # 🪄 Контекстный фильтр транзакций (смотрим на 3 строки назад и 1 вперед)
-                context = " ".join(lines[max(0, i-3):min(len(lines), i+2)]).lower()
-                is_transaction = 'транзакция' in context and 'прогноз' not in context
+            # Сортируем строки сверху вниз
+            sorted_keys = sorted(lines.keys(), key=lambda k: (k[0], k[1], k[2]))
 
-                # 1. Поиск даты
+            for key in sorted_keys:
+                # Сортируем слова в строке слева направо
+                line_words = sorted(lines[key], key=lambda x: x['left'])
+                line_text = " ".join([w['text'] for w in line_words])
+                lower_line = line_text.lower()
+
+                # 1. Дата
                 date_match = re.search(r'(\d{1,2}\s+(?:янв|фев|мар|апр|ма[йя]|июн|июл|авг|сен|окт|ноя|дек)[а-яА-Я]*|сегодня|вчера)', lower_line)
                 if date_match:
                     d_str = date_match.group(1).capitalize()
@@ -181,41 +194,59 @@ def process_uploaded_images(uploaded_files):
                     else:
                         current_date = d_str
 
-                # 2. Поиск времени
-                time_match = re.search(r'(\d{1,2}[:\.]\d{2})', line)
+                # 2. Время
+                time_match = re.search(r'(\d{1,2}[:\.]\d{2})', line_text)
                 if time_match:
                     current_time = time_match.group(1).replace('.', ':')
 
-                # 3. Поиск суммы (Строгий парсинг: берет только целые числа, игнорируя мусор и копейки)
-                amount_match = re.search(r'([+-])\s*(\d+(?:[\s.,]\d{3})*)', line)
+                # 3. Сумма
+                amount_match = re.search(r'([+-])\s*(\d[\d\s]*)', line_text)
                 
                 if amount_match and current_date and current_time:
-                    if is_transaction:
+                    # Фильтр транзакций
+                    if 'транзакция' in lower_line or 'вывод' in lower_line:
                         current_time = None
                         continue
 
                     sign = amount_match.group(1)
-                    # Очищаем строку от пробелов, точек и запятых, оставляя только цифры
-                    amount_str = amount_match.group(2).replace(' ', '').replace(',', '').replace('.', '')
+                    raw_amount = amount_match.group(2).strip()
                     
-                    try:
-                        amount_val = int(amount_str)
-                        if sign == '-':
-                            amount_val = -amount_val
-                        
-                        new_bet = {
-                            "Дата": current_date.strip(), 
-                            "Время": current_time.strip(), 
-                            "Результат": "Выигрыш" if amount_val > 0 else "Проигрыш", 
-                            "Сумма_изменения": amount_val
-                        }
-                        
-                        if not all_bets_data or all_bets_data[-1] != new_bet:
-                            all_bets_data.append(new_bet)
+                    # Убираем копейки (всё после точки или запятой)
+                    raw_amount = raw_amount.split('.')[0].split(',')[0]
+
+                    # 🪄 УМНЫЙ РАЗБОР: отделяем знак рубля, который Tesseract читает как '2'
+                    # "271 2" -> ['271', '2'] -> берем '271'
+                    # "1 271 2" -> ['1', '271', '2'] -> берем '1' и '271'
+                    parts = raw_amount.split()
+                    valid_parts = []
+                    for i, p in enumerate(parts):
+                        if i == 0 and len(p) <= 3:
+                            valid_parts.append(p)
+                        elif i > 0 and len(p) == 3:
+                            valid_parts.append(p)
+                    
+                    amount_str = "".join(valid_parts)
+                    amount_str = re.sub(r'[^\d]', '', amount_str) # Оставляем только цифры
+
+                    if amount_str:
+                        try:
+                            amount_val = int(amount_str)
+                            if sign == '-':
+                                amount_val = -amount_val
                             
-                        current_time = None 
-                    except ValueError: 
-                        pass
+                            new_bet = {
+                                "Дата": current_date.strip(), 
+                                "Время": current_time.strip(), 
+                                "Результат": "Выигрыш" if amount_val > 0 else "Проигрыш", 
+                                "Сумма_изменения": amount_val
+                            }
+                            
+                            if not all_bets_data or all_bets_data[-1] != new_bet:
+                                all_bets_data.append(new_bet)
+                                
+                            current_time = None 
+                        except ValueError: 
+                            pass
 
         progress_bar.progress((idx + 1) / total_files)
 
@@ -223,11 +254,7 @@ def process_uploaded_images(uploaded_files):
     progress_bar.empty()
     
     df_res = pd.DataFrame(all_bets_data)
-    
-    if df_res.empty:
-        return df_res, error_logs
-        
-    return df_res, []
+    return df_res
 
 # ==========================================
 # 📊 ОСНОВНАЯ ЛОГИКА
@@ -244,7 +271,7 @@ with st.sidebar:
     if st.button("🚀 Обработать скриншоты"):
         if uploaded_files:
             with st.spinner('Нейросеть читает ваши ставки... Это займет около 10-20 секунд...'):
-                new_df, errors = process_uploaded_images(uploaded_files)
+                new_df = process_uploaded_images(uploaded_files)
                 if not new_df.empty:
                     if 'df' not in st.session_state:
                         st.session_state.df = new_df
@@ -254,11 +281,7 @@ with st.sidebar:
                     st.success(f"Данные обновлены! Распознано ставок: {len(new_df)}")
                     st.rerun()
                 else:
-                    st.error("Не удалось распознать ставки.")
-                    if errors:
-                        st.warning("Технические детали:")
-                        for err in errors:
-                            st.text(err)
+                    st.error("Не удалось распознать ставки. Попробуйте еще раз.")
         else:
             st.warning("Пожалуйста, выберите файлы.")
 
@@ -280,6 +303,8 @@ with st.sidebar:
             st.success("База данных очищена! Загрузите новые скриншоты.")
             st.rerun()
         st.markdown('</div>', unsafe_allow_html=True)
+        
+        st.caption("Не забудьте скачать CSV, чтобы не потерять данные при перезапуске сервера.")
 
 # Если данные есть в памяти, показываем дашборд
 if 'df' in st.session_state and not st.session_state.df.empty:
