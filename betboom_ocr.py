@@ -75,11 +75,19 @@ def _find_card_rows(gray: np.ndarray) -> tuple[list[tuple[int, int]], tuple[int,
 
     heights = np.asarray([b - a for a, b in segments], dtype=np.float32)
     median_h = float(np.median(heights))
-    segments = [
-        (a, b)
-        for a, b in segments
-        if 0.42 * median_h <= (b - a) <= 2.2 * median_h
-    ]
+    
+    # 🪄 ИСПРАВЛЕНИЕ: Если блок слишком высокий (склеились 2 карточки), режем его пополам
+    new_segments = []
+    for a, b in segments:
+        h = b - a
+        if 0.42 * median_h <= h <= 1.6 * median_h:
+            new_segments.append((a, b))
+        elif h > 1.6 * median_h:
+            mid = (a + b) // 2
+            new_segments.append((a, mid))
+            new_segments.append((mid, b))
+    segments = new_segments
+
     if not segments:
         return [], (0, width), background
 
@@ -181,7 +189,6 @@ def _ocr_one_card(
     row_height = max(1, y1 - y0)
     split_x = int(x0 + (x1 - x0) * 0.80)
 
-    # OCR date, time and card type in the left part of this card only.
     left_date = gray[max(0, y0 - 2):min(gray.shape[0], y1 + 2), x0:split_x]
     left_date = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(left_date)
     left_date = 255 - left_date
@@ -192,9 +199,6 @@ def _ocr_one_card(
         config="--oem 1 --psm 6",
     ).strip()
 
-    # IMPORTANT: read the lower line only. The upper line contains the label
-    # "Списание" / "Пополнение"; the lower line contains the numeric value.
-    # Keeping the currency glyph out of the OCR mask prevents ₽ being read as 2.
     amount_y0 = min(y1 - 1, y0 + int(row_height * 0.48))
     amount_y1 = min(gray.shape[0], y0 + int(row_height * 0.90))
     amount_crop = gray[amount_y0:amount_y1, split_x:x1]
@@ -303,7 +307,6 @@ def process_image_bytes(
             if progress_callback:
                 progress_callback(completed, len(rows))
 
-    # The balance history is newest -> oldest. Correct year when crossing Jan/Dec.
     year = datetime.now().year
     previous_month: int | None = None
 
@@ -326,8 +329,6 @@ def process_image_bytes(
 
         amount = card["amount"]
         if card["type"] != "forecast" or date_value is None or time_value is None or amount is None:
-            # Do not expose a manual review queue: uncertain rows are omitted
-            # automatically so they cannot silently corrupt P&L.
             result["diagnostics"]["skipped_cards"] += 1
             continue
 
