@@ -91,7 +91,6 @@ st.markdown(
     }
     .app-subtitle { text-align:center; color:#9ba8c6; font-size:13px; margin:0 0 26px; }
 
-    /* Карточки метрик */
     .custom-card {
         background: rgba(255, 255, 255, 0.03);
         border: 1px solid rgba(255, 255, 255, 0.08);
@@ -119,7 +118,6 @@ st.markdown(
 
     @keyframes fadeInUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
 
-    /* Вкладки */
     .stTabs [data-baseweb="tab-list"] { gap: 15px; justify-content: center; background: rgba(255, 255, 255, 0.02); padding: 10px 20px; border-radius: 50px; width: fit-content; margin: 0 auto; border: 1px solid rgba(255, 255, 255, 0.05); backdrop-filter: blur(5px); }
     .stTabs [data-baseweb="tab"] { height: 45px; white-space: pre-wrap; background-color: transparent; border-radius: 30px; color: #94a3b8; font-weight: 600; font-size: 15px; padding: 0 24px; transition: all 0.4s cubic-bezier(0.25, 0.8, 0.25, 1); border: none; }
     .stTabs [data-baseweb="tab"]:hover { color: #e2e8f0; background-color: rgba(255, 255, 255, 0.05); }
@@ -127,7 +125,6 @@ st.markdown(
     .stTabs [data-baseweb="tab-highlight"] { display: none; }
     .stTabs [data-baseweb="tab-border"] { display: none; }
 
-    /* Таблица */
     .custom-table { width: 100%; border-collapse: collapse; margin-top: 10px; background: rgba(255, 255, 255, 0.02); border-radius: 12px; overflow: hidden; }
     .custom-table th, .custom-table td { padding: 12px 15px; text-align: left; border-bottom: 1px solid rgba(255, 255, 255, 0.05); }
     .custom-table th { background: rgba(255, 255, 255, 0.05); color: #94a3b8; font-weight: 600; text-transform: uppercase; font-size: 12px; letter-spacing: 1px; }
@@ -168,9 +165,6 @@ def format_money(val: float) -> str:
     else:
         return f"{val:,.2f} ₽".replace(",", " ").replace(".00", "")
 
-# -----------------------------------------------------------------------------
-# Боковая панель
-# -----------------------------------------------------------------------------
 with st.sidebar:
     st.markdown("### ⚙️ Управление")
     st.markdown("Загрузите скриншоты, чтобы обновить статистику.")
@@ -226,9 +220,6 @@ with st.sidebar:
         
         st.caption("Не забудьте скачать CSV, чтобы не потерять данные.")
 
-# -----------------------------------------------------------------------------
-# Основная логика
-# -----------------------------------------------------------------------------
 if 'df' in st.session_state and not st.session_state.df.empty:
     df = st.session_state.df.copy()
     
@@ -241,7 +232,6 @@ if 'df' in st.session_state and not st.session_state.df.empty:
     df_rev['Баланс'] = df_rev['Сумма_изменения'].cumsum()
     df_rev['Номер ставки'] = df_rev.index + 1
 
-    # ВЕРХНИЕ 4 КАРТОЧКИ
     col1, col2, col3, col4 = st.columns(4)
     
     total_bets = len(df)
@@ -271,7 +261,6 @@ if 'df' in st.session_state and not st.session_state.df.empty:
     st.write("")
     st.write("")
 
-    # ВКЛАДКИ
     tab1, tab2, tab3 = st.tabs(["📊 График баланса", "📝 История по месяцам", "🏆 Ключевые цифры"])
 
     with tab1:
