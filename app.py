@@ -151,23 +151,22 @@ def process_uploaded_images(uploaded_files):
         for chunk in chunks:
             gray = cv2.cvtColor(chunk, cv2.COLOR_BGR2GRAY)
             
-            # 🪄 МАГИЯ ОБРАБОТКИ ИЗОБРАЖЕНИЯ
-            # 1. CLAHE выравнивает контраст, делая текст ярким на темном фоне
+            # 🪄 Улучшенная обработка изображения
+            # 1. CLAHE (выравнивание контраста)
             clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
             gray = clahe.apply(gray)
             
-            # 2. Инверсия (делаем фон белым, текст черным)
+            # 2. Инверсия
             if np.mean(gray) < 128: 
                 gray = cv2.bitwise_not(gray)
                 
-            # 3. Увеличение в 4 раза с помощью LANCZOS4 (сохраняет точки и запятые)
+            # 3. Увеличение в 4 раза
             gray = cv2.resize(gray, None, fx=4.0, fy=4.0, interpolation=cv2.INTER_LANCZOS4)
             
-            # 4. Бинаризация Оцу (делает картинку чисто черно-белой)
+            # 4. Бинаризация
             _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
 
             try:
-                # --psm 6 отлично читает списки построчно
                 text = pytesseract.image_to_string(thresh, lang='rus+eng', config='--psm 6')
             except Exception:
                 continue
@@ -200,24 +199,24 @@ def process_uploaded_images(uploaded_files):
                 if time_match:
                     current_time = time_match.group(1).replace('.', ':')
 
-                # 3. Сумма (Умная регулярка)
-                # Ищет знак +/-, цифры (с возможными пробелами в тысячах) и опциональные копейки
-                # Останавливается перед знаком рубля (даже если он выглядит как 2, 7 или P)
-                amount_match = re.search(r'([+\-—–_])\s*(\d[\d]*(?:\s\d{3})*(?:[.,]\d{1,2})?)(?=\s*[₽pPрR2?]|\s*$)', line)
+                # 3. Сумма
+                amount_match = re.search(r'([+-])\s*(\d+(?:[.,]\d+)?)', line)
                 
                 if amount_match and current_date and current_time and not is_transaction:
                     sign = amount_match.group(1)
-                    amount_str = amount_match.group(2)
+                    amount_str = amount_match.group(2).replace(' ', '').replace(',', '.')
                     
-                    # Очищаем от лишних пробелов и меняем запятую на точку
-                    amount_str = amount_str.replace(' ', '').replace(',', '.')
+                    # 🪄 ЭВРИСТИКА: Отрезаем приклеившийся знак рубля
+                    # Если нет точки (не копейки) и число длинное, а в конце 2 или 7 — это знак рубля
+                    if '.' not in amount_str:
+                        if len(amount_str) > 3 and amount_str[-1] in '27':
+                            amount_str = amount_str[:-1]
                     
                     try:
                         amount_val = float(amount_str)
-                        if sign in '-—–_':
+                        if sign == '-':
                             amount_val = -amount_val
                             
-                        # Если число целое, переводим в int для красоты
                         if amount_val.is_integer():
                             amount_val = int(amount_val)
                             
