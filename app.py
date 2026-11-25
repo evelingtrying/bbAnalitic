@@ -135,9 +135,9 @@ def process_uploaded_images(uploaded_files):
 
         h, w = img.shape[:2]
         
-        # Нарезка на куски по 4000 пикселей с перекрытием 600
-        max_height = 4000
-        overlap = 600
+        # Нарезка на куски по 3000 пикселей с перекрытием 500
+        max_height = 3000
+        overlap = 500
         
         chunks = []
         y = 0
@@ -149,33 +149,33 @@ def process_uploaded_images(uploaded_files):
 
         current_date = None
         current_time = None
-        is_transaction = False  # Флаг для отсеивания блоков "Транзакция"
 
         for chunk in chunks:
             gray = cv2.cvtColor(chunk, cv2.COLOR_BGR2GRAY)
-            gray = cv2.resize(gray, None, fx=1.5, fy=1.5, interpolation=cv2.INTER_CUBIC)
+            # Увеличиваем в 2.5 раза для распознавания мелкого текста
+            gray = cv2.resize(gray, None, fx=2.5, fy=2.5, interpolation=cv2.INTER_CUBIC)
+            
+            if np.mean(gray) < 128: 
+                gray = cv2.bitwise_not(gray)
 
             try:
                 text = pytesseract.image_to_string(gray, lang='rus+eng', config='--psm 6')
             except Exception as e:
                 error_logs.append(f"Ошибка Tesseract: {str(e)}")
-                break
+                continue
 
             lines = text.split('\n')
-            for line in lines:
+            for i, line in enumerate(lines):
                 line = line.strip()
                 if not line: continue
-
                 lower_line = line.lower()
 
-                # 🪄 ЛОВУШКА ДЛЯ ТРАНЗАКЦИЙ: если видим слово "Транзакция", включаем флаг.
-                # Если видим "Прогноз", выключаем флаг.
-                if 'транзакция' in lower_line:
-                    is_transaction = True
-                elif 'прогноз' in lower_line:
-                    is_transaction = False
+                # 🪄 УМНАЯ ПРОВЕРКА КОНТЕКСТА (смотрим на 3 строки назад и 1 вперед)
+                # Если рядом есть "Транзакция" и НЕТ "Прогноз", значит это транзакция.
+                context = " ".join(lines[max(0, i-3):min(len(lines), i+2)]).lower()
+                is_transaction = 'транзакция' in context and 'прогноз' not in context
 
-                # 1. Поиск даты (число + месяц, или слова "Сегодня", "Вчера")
+                # 1. Поиск даты (число + месяц, или "Сегодня", "Вчера")
                 date_match = re.search(r'(\d{1,2}\s+(?:янв|фев|мар|апр|ма[йя]|июн|июл|авг|сен|окт|ноя|дек)[а-яА-Я]*|сегодня|вчера)', lower_line)
                 if date_match:
                     d_str = date_match.group(1).capitalize()
@@ -191,22 +191,23 @@ def process_uploaded_images(uploaded_files):
                 if time_match:
                     current_time = time_match.group(1).replace('.', ':')
 
-                # 3. Поиск суммы (Останавливаемся перед знаком рубля, чтобы не захватить цифру 2 или 7)
-                amount_match = re.search(r'([+-—–_~]\s*\d[\d\s]*?)(?=\s*[₽pPрR2?]|$)', line)
+                # 3. Поиск суммы (Поддерживает копейки и пробелы в тысячах)
+                # Ищет + или -, затем цифры, группы по 3 цифры и опционально копейки
+                amount_match = re.search(r'([+\-—–_~]\s*\d+(?:\s*\d{3})*(?:[.,]\d+)?)', line)
                 
                 if amount_match and current_date and current_time:
-                    # Если это транзакция - просто пропускаем и сбрасываем время
+                    # Если это транзакция - пропускаем и сбрасываем время
                     if is_transaction:
                         current_time = None
                         continue
 
                     amount_str = amount_match.group(1)
-                    amount_str = amount_str.replace(' ', '').replace('—', '-').replace('–', '-').replace('_', '-').replace('~', '-')
-                    amount_str = re.sub(r'[^\d+-]', '', amount_str)
+                    amount_str = amount_str.replace(' ', '').replace('—', '-').replace('–', '-').replace('_', '-').replace('~', '-').replace(',', '.')
+                    amount_str = re.sub(r'[^\d+-.]', '', amount_str)
 
                     if amount_str and amount_str[0] in '+-':
                         try:
-                            amount_val = int(amount_str)
+                            amount_val = int(float(amount_str))
                             
                             new_bet = {
                                 "Дата": current_date.strip(), 
@@ -219,7 +220,7 @@ def process_uploaded_images(uploaded_files):
                             if not all_bets_data or all_bets_data[-1] != new_bet:
                                 all_bets_data.append(new_bet)
                                 
-                            # Сбрасываем время, чтобы не задублировать ставку
+                            # Сбрасываем время, чтобы не задублировать ставку на следующей строке
                             current_time = None 
                         except ValueError: 
                             pass
@@ -297,20 +298,25 @@ if 'df' in st.session_state and not st.session_state.df.empty:
     df = st.session_state.df.copy()
     
     current_year = datetime.now().year 
-    months_dict = {'января': '01', 'февраля': '02', 'марта': '03', 'апреля': '04', 'мая': '05', 'июня': '06', 'июля': '07', 'августа': '08', 'сентября': '09', 'октября': '10', 'ноября': '11', 'декабря': '12'}
     
     def clean_date(date_str):
         date_str = str(date_str).lower().strip()
-        
-        # Если дата уже в формате ДД.ММ.ГГГГ (например, от "Сегодня")
-        if re.match(r'\d{2}\.\d{2}\.\d{4}', date_str):
+        if re.match(r'\d{2}\.\d{2}\.\d{4}', date_str): 
             return date_str
             
-        # Иначе парсим русский месяц
-        for rus_month, num_month in months_dict.items():
-            if rus_month in date_str:
-                date_str = date_str.replace(rus_month, num_month).replace(' ', '.')
-                return f"{date_str}.{current_year}"
+        # Умный поиск месяцев (защита от опечаток OCR)
+        month_map = {
+            'янв': '01', 'фев': '02', 'мар': '03', 'апр': '04', 'ма[йя]': '05',
+            'июн': '06', 'июл': '07', 'авг': '08', 'сен': '09', 'окт': '10',
+            'ноя': '11', 'дек': '12'
+        }
+        
+        for prefix, num in month_map.items():
+            if prefix in date_str:
+                day_match = re.search(r'\d{1,2}', date_str)
+                if day_match:
+                    day = day_match.group(0)
+                    return f"{day.zfill(2)}.{num}.{current_year}"
         return date_str
 
     df['Дата_парсинг'] = df['Дата'].apply(clean_date)
