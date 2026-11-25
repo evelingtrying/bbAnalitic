@@ -196,6 +196,9 @@ with st.sidebar:
                     for diag in diagnostics:
                         if diag.get("reason"):
                             st.warning(f"{diag['file']}: {diag['reason']}")
+                        if diag.get("raw_text"):
+                            with st.expander(f"Текст из {diag['file']}"):
+                                st.text(diag["raw_text"])
         else:
             st.warning("Пожалуйста, выберите файлы.")
 
