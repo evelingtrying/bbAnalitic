@@ -28,7 +28,6 @@ MONTHS = {
     "oct": 10, "nov": 11, "dec": 12,
 }
 
-
 def _normalize_month(month_text: str) -> int | None:
     value = month_text.lower().strip()
     if re.search(r"[а-яё]", value):
@@ -37,7 +36,6 @@ def _normalize_month(month_text: str) -> int | None:
         if value.startswith(prefix):
             return month_number
     return None
-
 
 def _parse_date_time(text: str, year: int) -> tuple[str | None, str | None, int | None]:
     lowered = text.lower().replace("ё", "е")
@@ -80,7 +78,6 @@ def _parse_date_time(text: str, year: int) -> tuple[str | None, str | None, int 
         return None, time_value, month
     return date_value.strftime("%d.%m.%Y"), time_value, month
 
-
 def _parse_signed_amount(text: str) -> float | None:
     normalized = (
         text.replace("−", "-")
@@ -89,6 +86,7 @@ def _parse_signed_amount(text: str) -> float | None:
         .replace("＋", "+")
         .replace("\n", " ")
     )
+    # Ищем знак + или -, затем цифры, опционально копейки. Игнорируем знак рубля.
     match = re.search(r"([+-])\s*(\d+(?:[.,]\d{1,2})?)", normalized)
     if not match:
         return None
@@ -126,15 +124,15 @@ def process_image_bytes(
         return result
 
     height, width = image.shape[:2]
+    
+    # 🪄 УМНОЕ МАСШТАБИРОВАНИЕ: Если картинка слишком маленькая, увеличиваем её до нормального размера
+    if width < 1000:
+        scale = 1000 / width
+        image = cv2.resize(image, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+        height, width = image.shape[:2]
+
     result["diagnostics"]["width"] = width
     result["diagnostics"]["height"] = height
-
-    if width < 700:
-        result["diagnostics"]["reason"] = (
-            f"Слишком низкое разрешение ({width} px по ширине). "
-            "Загрузите оригинальный скриншот."
-        )
-        return result
 
     try:
         ocr = _get_engine()
@@ -152,7 +150,7 @@ def process_image_bytes(
     
     result["diagnostics"]["raw_text"] = "\n".join(txts)
 
-    # 🪄 Извлекаем все блоки текста с их координатами
+    # Извлекаем блоки текста
     blocks = []
     for i in range(len(txts)):
         text = txts[i]
@@ -168,44 +166,49 @@ def process_image_bytes(
             "x": x_center,
             "y": y_center,
             "h": h,
-            "used": False
         })
+
+    # Сортируем блоки сверху вниз, затем слева направо
+    blocks.sort(key=lambda b: (b["y"], b["x"]))
+
+    # 🪄 СКЛЕИВАЕМ БЛОКИ В ЛОГИЧЕСКИЕ СТРОКИ
+    lines = []
+    current_line = []
+    last_y = None
+
+    for b in blocks:
+        if last_y is None or abs(b["y"] - last_y) < b["h"] * 0.8:
+            current_line.append(b)
+            last_y = sum(item["y"] for item in current_line) / len(current_line)
+        else:
+            lines.append(current_line)
+            current_line = [b]
+            last_y = b["y"]
+    if current_line:
+        lines.append(current_line)
 
     parsed_cards = []
     
-    # 🪄 Ищем "якоря" (Прогноз или Транзакция) и собираем блоки вокруг них
-    for i, block in enumerate(blocks):
-        if block["used"]:
-            continue
-
-        lowered = block["text"].lower().replace("ё", "е")
+    # 🪄 ИЩЕМ "ПРОГНОЗ" И БЕРЕМ СТРОКУ ПОД НИМ
+    for i, line_blocks in enumerate(lines):
+        line_text = " ".join(b["text"] for b in line_blocks)
+        lowered = line_text.lower().replace("ё", "е")
+        
         if "прогноз" in lowered or "транзакц" in lowered:
             card_type = "transaction" if "транзакц" in lowered else "forecast"
             
-            # Находим все блоки на этой же горизонтальной линии
-            line_blocks = [block]
-            block["used"] = True
+            # Берем текст текущей строки и ОБЯЗАТЕЛЬНО следующей (где дата и сумма)
+            context_text = line_text
+            if i + 1 < len(lines):
+                next_line_text = " ".join(b["text"] for b in lines[i+1])
+                context_text += " " + next_line_text
             
-            for j, other in enumerate(blocks):
-                if j == i or other["used"]:
-                    continue
-                # Если блок находится примерно на той же высоте (допуск = 1.5 высоты текста)
-                if abs(other["y"] - block["y"]) < block["h"] * 1.5:
-                    line_blocks.append(other)
-                    other["used"] = True
-            
-            # Сортируем блоки слева направо
-            line_blocks.sort(key=lambda b: b["x"])
-            full_line_text = " ".join(b["text"] for b in line_blocks)
-            
-            # Парсим дату, время и сумму из собранной строки
-            date_value, time_value, month_number = _parse_date_time(full_line_text, datetime.now().year)
-            amount_match = re.search(r"([+-]\s*\d+(?:[.,]\d{1,2})?)", full_line_text)
-            amount = _parse_signed_amount(amount_match.group(1)) if amount_match else None
+            date_value, time_value, month_number = _parse_date_time(context_text, datetime.now().year)
+            amount = _parse_signed_amount(context_text)
 
             parsed_cards.append({
                 "type": card_type,
-                "text": full_line_text,
+                "text": context_text,
                 "amount": amount,
                 "date": date_value,
                 "time": time_value,
