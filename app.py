@@ -4,7 +4,6 @@ import plotly.graph_objects as go
 from datetime import datetime, timedelta
 import cv2
 import pytesseract
-from pytesseract import Output
 import numpy as np
 import re
 
@@ -147,35 +146,36 @@ def process_uploaded_images(uploaded_files):
 
         current_date = None
         current_time = None
+        is_transaction = False
 
         for chunk in chunks:
             gray = cv2.cvtColor(chunk, cv2.COLOR_BGR2GRAY)
-            gray = cv2.resize(gray, None, fx=3.0, fy=3.0, interpolation=cv2.INTER_CUBIC)
+            # Инверсия для темной темы (белый текст на черном -> черный на белом)
+            if np.mean(gray) < 128: 
+                gray = cv2.bitwise_not(gray)
+                
+            # Увеличение х2.5 для четкости
+            gray = cv2.resize(gray, None, fx=2.5, fy=2.5, interpolation=cv2.INTER_CUBIC)
 
             try:
-                d = pytesseract.image_to_data(gray, lang='rus+eng', config='--psm 6', output_type=Output.DICT)
+                text = pytesseract.image_to_string(gray, lang='rus+eng', config='--psm 6')
             except Exception:
                 continue
 
-            n_boxes = len(d['text'])
-            lines = {}
-            
-            for i in range(n_boxes):
-                if int(d['conf'][i]) > 20 and d['text'][i].strip():
-                    key = (d['block_num'][i], d['par_num'][i], d['line_num'][i])
-                    if key not in lines:
-                        lines[key] = []
-                    lines[key].append({'text': d['text'][i], 'left': d['left'][i]})
+            lines = text.split('\n')
+            for line in lines:
+                line = line.strip()
+                if not line: continue
+                lower_line = line.lower()
 
-            sorted_keys = sorted(lines.keys(), key=lambda k: (k[0], k[1], k[2]))
+                # Переключатель транзакций
+                if 'транзакция' in lower_line:
+                    is_transaction = True
+                elif 'прогноз' in lower_line:
+                    is_transaction = False
 
-            for key in sorted_keys:
-                line_words = sorted(lines[key], key=lambda x: x['left'])
-                line_text = " ".join([w['text'] for w in line_words])
-                lower_line = line_text.lower()
-
-                # 1. Дата
-                date_match = re.search(r'(\d{1,2}\s+(?:янв|фев|мар|апр|ма[йя]|июн|июл|авг|сен|окт|ноя|дек)[а-яА-Я]*|сегодня|вчера)', lower_line)
+                # 1. Поиск даты
+                date_match = re.search(r'(\d{1,2}\s+[а-яА-Я]+)', lower_line)
                 if date_match:
                     d_str = date_match.group(1).capitalize()
                     if d_str.lower() == 'сегодня':
@@ -185,32 +185,24 @@ def process_uploaded_images(uploaded_files):
                     else:
                         current_date = d_str
 
-                # 2. Время
-                time_match = re.search(r'(\d{1,2}[:\.]\d{2})', line_text)
+                # 2. Поиск времени
+                time_match = re.search(r'(\d{1,2}[:\.]\d{2})', line)
                 if time_match:
                     current_time = time_match.group(1).replace('.', ':')
 
-                # 3. Сумма
-                amount_match = re.search(r'([+-])\s*(\d[\d\s]*)', line_text)
+                # 3. Поиск суммы
+                amount_match = re.search(r'([+-])\s*(\d[\d\s]*)', line)
                 
-                if amount_match and current_date and current_time:
-                    if 'транзакция' in lower_line or 'вывод' in lower_line:
-                        current_time = None
-                        continue
-
+                if amount_match and current_date and current_time and not is_transaction:
                     sign = amount_match.group(1)
                     raw_amount = amount_match.group(2).strip()
-                    raw_amount = raw_amount.split('.')[0].split(',')[0]
-
-                    parts = raw_amount.split()
-                    valid_parts = []
-                    for i, p in enumerate(parts):
-                        if i == 0 and len(p) <= 3:
-                            valid_parts.append(p)
-                        elif i > 0 and len(p) == 3:
-                            valid_parts.append(p)
                     
-                    amount_str = "".join(valid_parts)
+                    # 🪄 Умное отсечение знака рубля (распознанного как цифра '2' или '7')
+                    parts = raw_amount.split()
+                    if len(parts) > 1 and len(parts[-1]) == 1 and parts[-1] in ['2', '7', '1', 'z', 'Z']:
+                        parts = parts[:-1] # Отрезаем последнюю одиночную цифру
+                    
+                    amount_str = "".join(parts)
                     amount_str = re.sub(r'[^\d]', '', amount_str)
 
                     if amount_str:
@@ -238,8 +230,7 @@ def process_uploaded_images(uploaded_files):
     
     df_res = pd.DataFrame(all_bets_data)
     
-    # 🪄 УДАЛЕНИЕ ДУБЛИКАТОВ
-    # Убирает наложения кусков, но оставляет реальные ставки, сделанные в одну минуту
+    # Очистка дубликатов (наложений кусков)
     if not df_res.empty:
         df_res = df_res.drop_duplicates(subset=['Дата', 'Время', 'Сумма_изменения'], keep='first')
         
