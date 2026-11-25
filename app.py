@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 from datetime import datetime
-import html
-
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
@@ -16,9 +14,6 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# -----------------------------------------------------------------------------
-# Визуальный стиль
-# -----------------------------------------------------------------------------
 st.markdown(
     r'''
     <style>
@@ -196,10 +191,6 @@ with st.sidebar:
                     for diag in diagnostics:
                         if diag.get("reason"):
                             st.warning(f"{diag['file']}: {diag['reason']}")
-                        if diag.get("failed_cards"):
-                            with st.expander(f"Неудачные карточки из {diag['file']}"):
-                                for card in diag["failed_cards"]:
-                                    st.write(f"`{card}`")
                         if diag.get("raw_text"):
                             with st.expander(f"Текст из {diag['file']}"):
                                 st.text(diag["raw_text"])
