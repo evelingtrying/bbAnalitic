@@ -120,9 +120,9 @@ st.markdown("""
 # ==========================================
 def process_uploaded_images(uploaded_files):
     all_bets_data = []
+    total_files = len(uploaded_files)
     progress_bar = st.progress(0)
     status_text = st.empty()
-    total_files = len(uploaded_files)
     
     for idx, uploaded_file in enumerate(uploaded_files):
         status_text.text(f"Обработка файла {idx+1} из {total_files}...")
@@ -132,9 +132,9 @@ def process_uploaded_images(uploaded_files):
 
         h, w = img.shape[:2]
         
-        # 🪄 Нарезка: по 4000 пикселей с перекрытием 400
-        max_height = 4000
-        overlap = 400
+        # Нарезка на куски по 5000 пикселей с перекрытием 800 (безопасно для Tesseract)
+        max_height = 5000
+        overlap = 800
         
         chunks = []
         y = 0
@@ -144,23 +144,27 @@ def process_uploaded_images(uploaded_files):
             if y2 == h: break
             y = y2 - overlap
 
+        # 🪄 КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: Переменные даты и времени объявлены ДО цикла кусков.
+        # Теперь они сохраняются, даже если картинка порезана.
+        current_date = None
+        current_time = None
+
         for chunk in chunks:
             gray = cv2.cvtColor(chunk, cv2.COLOR_BGR2GRAY)
             
-            # Инверсия для темной темы
+            # Выравнивание контраста (спасает красные минусы от исчезновения)
+            gray = cv2.equalizeHist(gray)
+            
             if np.mean(gray) < 128: 
                 gray = cv2.bitwise_not(gray)
                 
-            # Увеличение в 2 раза (оптимально)
             gray = cv2.resize(gray, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
+            _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
 
-            # Без жесткого порога (threshold), чтобы не потерять цветные + и -
-            text = pytesseract.image_to_string(gray, lang='rus+eng', config='--psm 6')
+            # psm 6 (единый блок текста) отлично подходит для списков
+            text = pytesseract.image_to_string(thresh, lang='rus+eng', config='--psm 6')
 
             lines = text.split('\n')
-            current_date = None
-            current_time = None
-
             for line in lines:
                 line = line.strip()
                 if not line: continue
@@ -175,12 +179,11 @@ def process_uploaded_images(uploaded_files):
                 if time_match:
                     current_time = time_match.group(1)
 
-                # 3. Поиск суммы (например: "+ 1 038 ₽" или "- 500 ₽")
-                # Учитываем разные тире: -, —, –, а также случайные * и _
-                amount_match = re.search(r'([+-—–*_]\s*\d[\d\s]*)(?:\s*[₽pPрR])?', line)
+                # 3. Поиск суммы (учитываем минусы, тире и случайные символы OCR)
+                amount_match = re.search(r'([+\-—–_]\s*\d[\d\s.,]*)(?:\s*[₽pPрR])?', line)
                 
                 if amount_match and current_date and current_time:
-                    # Отсеиваем транзакции. Проверяем только начало строки
+                    # Отсеиваем транзакции (переводы, выводы)
                     lower_line = line.lower()
                     if (lower_line.startswith('транзакц') or 
                         lower_line.startswith('вывод') or 
@@ -189,20 +192,24 @@ def process_uploaded_images(uploaded_files):
                         continue
 
                     amount_str = amount_match.group(1)
-                    amount_str = amount_str.replace(' ', '').replace('—', '-').replace('–', '-')
+                    amount_str = amount_str.replace(' ', '').replace('—', '-').replace('–', '-').replace('_', '-')
                     amount_str = re.sub(r'[^\d+-]', '', amount_str)
 
-                    if amount_str and (amount_str[0] in '+-'):
+                    if amount_str and amount_str[0] in '+-':
                         try:
                             amount_val = int(amount_str)
-                            all_bets_data.append({
+                            
+                            new_bet = {
                                 "Дата": current_date.strip(), 
                                 "Время": current_time.strip(), 
                                 "Результат": "Выигрыш" if amount_val > 0 else "Проигрыш", 
                                 "Сумма_изменения": amount_val
-                            })
-                            # Сбрасываем время, чтобы не задублировать сумму на следующей строке
-                            current_time = None 
+                            }
+                            
+                            # 🪄 Защита от дубликатов только на стыках кусков (сравниваем с последней ставкой)
+                            if not all_bets_data or all_bets_data[-1] != new_bet:
+                                all_bets_data.append(new_bet)
+                                
                         except ValueError: 
                             pass
 
@@ -212,7 +219,6 @@ def process_uploaded_images(uploaded_files):
     progress_bar.empty()
     
     df_res = pd.DataFrame(all_bets_data)
-    # ❌ МЫ УБРАЛИ drop_duplicates, ЧТОБЫ НЕ ТЕРЯТЬ РЕАЛЬНЫЕ СТАВКИ
     return df_res
 
 # ==========================================
