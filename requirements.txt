@@ -1,6 +1,7 @@
-streamlit>=1.32
-pandas>=2.0
-plotly>=5.18
-opencv-python-headless>=4.8
-pytesseract>=0.3.10
-numpy>=1.24
+streamlit
+pandas
+plotly
+opencv-python-headless
+rapidocr
+onnxruntime
+numpy
