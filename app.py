@@ -4,7 +4,6 @@ import plotly.graph_objects as go
 from datetime import datetime, timedelta
 import cv2
 import pytesseract
-from pytesseract import Output
 import numpy as np
 import re
 
@@ -151,42 +150,39 @@ def process_uploaded_images(uploaded_files):
 
         for chunk in chunks:
             gray = cv2.cvtColor(chunk, cv2.COLOR_BGR2GRAY)
-            # Инверсия для темной темы
+            
+            # 🪄 МАГИЯ ОБРАБОТКИ ИЗОБРАЖЕНИЯ
+            # 1. CLAHE выравнивает контраст, делая текст ярким на темном фоне
+            clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
+            gray = clahe.apply(gray)
+            
+            # 2. Инверсия (делаем фон белым, текст черным)
             if np.mean(gray) < 128: 
                 gray = cv2.bitwise_not(gray)
                 
-            # Увеличение х2.5 для четкости
-            scale = 2.5
-            gray_resized = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+            # 3. Увеличение в 4 раза с помощью LANCZOS4 (сохраняет точки и запятые)
+            gray = cv2.resize(gray, None, fx=4.0, fy=4.0, interpolation=cv2.INTER_LANCZOS4)
+            
+            # 4. Бинаризация Оцу (делает картинку чисто черно-белой)
+            _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
 
             try:
-                d = pytesseract.image_to_data(gray_resized, lang='rus+eng', config='--psm 6', output_type=Output.DICT)
+                # --psm 6 отлично читает списки построчно
+                text = pytesseract.image_to_string(thresh, lang='rus+eng', config='--psm 6')
             except Exception:
                 continue
 
-            n_boxes = len(d['text'])
-            lines = {}
-            
-            # Группируем слова по строкам
-            for i in range(n_boxes):
-                if int(d['conf'][i]) > 20 and d['text'][i].strip():
-                    key = (d['block_num'][i], d['par_num'][i], d['line_num'][i])
-                    if key not in lines:
-                        lines[key] = []
-                    lines[key].append({
-                        'text': d['text'][i],
-                        'left': d['left'][i],
-                        'top': d['top'][i],
-                        'width': d['width'][i],
-                        'height': d['height'][i]
-                    })
+            lines = text.split('\n')
+            for line in lines:
+                line = line.strip()
+                if not line: continue
+                lower_line = line.lower()
 
-            sorted_keys = sorted(lines.keys(), key=lambda k: (k[0], k[1], k[2]))
-
-            for key in sorted_keys:
-                line_words = sorted(lines[key], key=lambda x: x['left'])
-                line_text = " ".join([w['text'] for w in line_words])
-                lower_line = line_text.lower()
+                # Переключатель транзакций
+                if 'транзакция' in lower_line:
+                    is_transaction = True
+                elif 'прогноз' in lower_line:
+                    is_transaction = False
 
                 # 1. Дата
                 date_match = re.search(r'(\d{1,2}\s+(?:янв|фев|мар|апр|ма[йя]|июн|июл|авг|сен|окт|ноя|дек)[а-яА-Я]*|сегодня|вчера)', lower_line)
@@ -200,44 +196,42 @@ def process_uploaded_images(uploaded_files):
                         current_date = d_str
 
                 # 2. Время
-                time_match = re.search(r'(\d{1,2}[:\.]\d{2})', line_text)
+                time_match = re.search(r'(\d{1,2}[:\.]\d{2})', line)
                 if time_match:
                     current_time = time_match.group(1).replace('.', ':')
 
-                # 3. Тип (Транзакция или Прогноз)
-                if 'транзакция' in lower_line:
-                    is_transaction = True
-                elif 'прогноз' in lower_line:
-                    is_transaction = False
-
-                # 4. Сумма (Ищем только в правой части экрана)
-                amount_val = None
-                for word_obj in line_words:
-                    word = word_obj['text'].strip()
-                    if word.startswith('+') or word.startswith('-'):
-                        # 🪄 КРИТИЧЕСКИЙ ФИКС: Сумма всегда справа. Отсекаем левую часть (дату).
-                        if word_obj['left'] < (chunk.shape[1] * scale * 0.4):
-                            continue
-                        
-                        # Извлекаем только цифры из слова (например, из "+921" получим "921")
-                        digits = re.sub(r'[^\d]', '', word)
-                        if digits:
-                            amount_val = int(digits)
-                            if word.startswith('-'):
-                                amount_val = -amount_val
-                            break # Нашли сумму, дальше по строке не идем
+                # 3. Сумма (Умная регулярка)
+                # Ищет знак +/-, цифры (с возможными пробелами в тысячах) и опциональные копейки
+                # Останавливается перед знаком рубля (даже если он выглядит как 2, 7 или P)
+                amount_match = re.search(r'([+\-—–_])\s*(\d[\d]*(?:\s\d{3})*(?:[.,]\d{1,2})?)(?=\s*[₽pPрR2?]|\s*$)', line)
                 
-                # Если сумма найдена и это не транзакция
-                if amount_val is not None and current_date and current_time and not is_transaction:
-                    new_bet = {
-                        "Дата": current_date.strip(), 
-                        "Время": current_time.strip(), 
-                        "Результат": "Выигрыш" if amount_val > 0 else "Проигрыш", 
-                        "Сумма_изменения": amount_val
-                    }
+                if amount_match and current_date and current_time and not is_transaction:
+                    sign = amount_match.group(1)
+                    amount_str = amount_match.group(2)
                     
-                    all_bets_data.append(new_bet)
-                    current_time = None # Сбрасываем, чтобы не задублировать
+                    # Очищаем от лишних пробелов и меняем запятую на точку
+                    amount_str = amount_str.replace(' ', '').replace(',', '.')
+                    
+                    try:
+                        amount_val = float(amount_str)
+                        if sign in '-—–_':
+                            amount_val = -amount_val
+                            
+                        # Если число целое, переводим в int для красоты
+                        if amount_val.is_integer():
+                            amount_val = int(amount_val)
+                            
+                        new_bet = {
+                            "Дата": current_date.strip(), 
+                            "Время": current_time.strip(), 
+                            "Результат": "Выигрыш" if amount_val > 0 else "Проигрыш", 
+                            "Сумма_изменения": amount_val
+                        }
+                        
+                        all_bets_data.append(new_bet)
+                        current_time = None 
+                    except ValueError: 
+                        pass
 
         progress_bar.progress((idx + 1) / total_files)
 
@@ -246,7 +240,7 @@ def process_uploaded_images(uploaded_files):
     
     df_res = pd.DataFrame(all_bets_data)
     
-    # Очистка дубликатов (наложений кусков)
+    # Удаление дубликатов на стыках кусков
     if not df_res.empty:
         df_res = df_res.drop_duplicates(subset=['Дата', 'Время', 'Сумма_изменения'], keep='first')
         
@@ -388,7 +382,12 @@ if 'df' in st.session_state and not st.session_state.df.empty:
                     for _, row in df_month.iterrows():
                         result_html = f'<span class="win-text">{row["Результат"]}</span>' if row["Результат"] == 'Выигрыш' else f'<span class="loss-text">{row["Результат"]}</span>'
                         amount_class = "win-text" if row["Сумма_изменения"] > 0 else "loss-text"
-                        html_table += f'<tr><td>{row["Дата"]}</td><td>{row["Время"]}</td><td>{result_html}</td><td><span class="{amount_class}">{row["Сумма_изменения"]:,.0f} ₽</span></td></tr>'
+                        
+                        # 🪄 Красивое форматирование сумм (с копейками, если они есть)
+                        val = float(row["Сумма_изменения"])
+                        amount_str = f"{val:,.2f}" if not val.is_integer() else f"{val:,.0f}"
+                        
+                        html_table += f'<tr><td>{row["Дата"]}</td><td>{row["Время"]}</td><td>{result_html}</td><td><span class="{amount_class}">{amount_str} ₽</span></td></tr>'
                     html_table += '</tbody></table>'
                     st.markdown(html_table, unsafe_allow_html=True)
         else:
