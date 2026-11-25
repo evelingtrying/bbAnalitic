@@ -394,10 +394,12 @@ with history_tab:
         )
         month_df = df[df["Месяц"] == selected_period].copy()
         month_df["Сумма, ₽"] = month_df["Сумма_изменения"].map(lambda value: fmt_money(value, 2))
+        # Сначала сортируем по полной дате и времени, затем выбираем
+        # только те столбцы, которые должны отображаться в таблице.
+        month_df = month_df.sort_values("ДатаВремя", ascending=False)
+        display_columns = ["Дата", "Время", "Результат", "Сумма, ₽", "Источник"]
         st.dataframe(
-            month_df[["Дата", "Время", "Результат", "Сумма, ₽", "Источник"]].sort_values(
-                ["ДатаВремя"], ascending=False
-            ),
+            month_df[display_columns],
             use_container_width=True,
             hide_index=True,
         )
