@@ -135,9 +135,9 @@ def process_uploaded_images(uploaded_files):
 
         h, w = img.shape[:2]
         
-        # Нарезка на куски по 3000 пикселей с перекрытием 500
-        max_height = 3000
-        overlap = 500
+        # Нарезка на куски по 4000 пикселей с перекрытием 600
+        max_height = 4000
+        overlap = 600
         
         chunks = []
         y = 0
@@ -149,14 +149,11 @@ def process_uploaded_images(uploaded_files):
 
         current_date = None
         current_time = None
+        is_transaction = False
 
         for chunk in chunks:
             gray = cv2.cvtColor(chunk, cv2.COLOR_BGR2GRAY)
-            # Увеличиваем в 2.5 раза для распознавания мелкого текста
-            gray = cv2.resize(gray, None, fx=2.5, fy=2.5, interpolation=cv2.INTER_CUBIC)
-            
-            if np.mean(gray) < 128: 
-                gray = cv2.bitwise_not(gray)
+            gray = cv2.resize(gray, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
 
             try:
                 text = pytesseract.image_to_string(gray, lang='rus+eng', config='--psm 6')
@@ -165,17 +162,18 @@ def process_uploaded_images(uploaded_files):
                 continue
 
             lines = text.split('\n')
-            for i, line in enumerate(lines):
+            for line in lines:
                 line = line.strip()
                 if not line: continue
                 lower_line = line.lower()
 
-                # 🪄 УМНАЯ ПРОВЕРКА КОНТЕКСТА (смотрим на 3 строки назад и 1 вперед)
-                # Если рядом есть "Транзакция" и НЕТ "Прогноз", значит это транзакция.
-                context = " ".join(lines[max(0, i-3):min(len(lines), i+2)]).lower()
-                is_transaction = 'транзакция' in context and 'прогноз' not in context
+                # 🪄 Проверка на транзакцию
+                if 'транзакция' in lower_line:
+                    is_transaction = True
+                elif 'прогноз' in lower_line:
+                    is_transaction = False
 
-                # 1. Поиск даты (число + месяц, или "Сегодня", "Вчера")
+                # 1. Поиск даты
                 date_match = re.search(r'(\d{1,2}\s+(?:янв|фев|мар|апр|ма[йя]|июн|июл|авг|сен|окт|ноя|дек)[а-яА-Я]*|сегодня|вчера)', lower_line)
                 if date_match:
                     d_str = date_match.group(1).capitalize()
@@ -186,28 +184,31 @@ def process_uploaded_images(uploaded_files):
                     else:
                         current_date = d_str
 
-                # 2. Поиск времени (например: "19:25" или "19.25")
+                # 2. Поиск времени
                 time_match = re.search(r'(\d{1,2}[:\.]\d{2})', line)
                 if time_match:
                     current_time = time_match.group(1).replace('.', ':')
 
-                # 3. Поиск суммы (Поддерживает копейки и пробелы в тысячах)
-                # Ищет + или -, затем цифры, группы по 3 цифры и опционально копейки
-                amount_match = re.search(r'([+\-—–_~]\s*\d+(?:\s*\d{3})*(?:[.,]\d+)?)', line)
+                # 3. Поиск суммы (БЕРЕМ ТОЛЬКО ЦЕЛУЮ ЧАСТЬ, ИГНОРИРУЕМ ВСЁ ОСТАЛЬНОЕ)
+                # Ищем знак + или -, затем цифры и пробелы
+                amount_match = re.search(r'([+-])\s*(\d[\d\s]*)', line)
                 
                 if amount_match and current_date and current_time:
-                    # Если это транзакция - пропускаем и сбрасываем время
                     if is_transaction:
                         current_time = None
                         continue
 
-                    amount_str = amount_match.group(1)
-                    amount_str = amount_str.replace(' ', '').replace('—', '-').replace('–', '-').replace('_', '-').replace('~', '-').replace(',', '.')
-                    amount_str = re.sub(r'[^\d+-.]', '', amount_str)
+                    sign = amount_match.group(1)
+                    # Убираем пробелы и всё, что после точки или запятой
+                    amount_str = amount_match.group(2).replace(' ', '')
+                    amount_str = amount_str.split('.')[0].split(',')[0]
+                    amount_str = re.sub(r'[^\d]', '', amount_str)
 
-                    if amount_str and amount_str[0] in '+-':
+                    if amount_str:
                         try:
-                            amount_val = int(float(amount_str))
+                            amount_val = int(amount_str)
+                            if sign == '-':
+                                amount_val = -amount_val
                             
                             new_bet = {
                                 "Дата": current_date.strip(), 
@@ -216,11 +217,9 @@ def process_uploaded_images(uploaded_files):
                                 "Сумма_изменения": amount_val
                             }
                             
-                            # Защита от дубликатов на стыках кусков
                             if not all_bets_data or all_bets_data[-1] != new_bet:
                                 all_bets_data.append(new_bet)
                                 
-                            # Сбрасываем время, чтобы не задублировать ставку на следующей строке
                             current_time = None 
                         except ValueError: 
                             pass
@@ -267,8 +266,6 @@ with st.sidebar:
                         st.warning("Технические детали:")
                         for err in errors:
                             st.text(err)
-                    else:
-                        st.info("Попробуйте сделать скриншот более высокого качества или обрезать лишние края.")
         else:
             st.warning("Пожалуйста, выберите файлы.")
 
@@ -290,8 +287,6 @@ with st.sidebar:
             st.success("База данных очищена! Загрузите новые скриншоты.")
             st.rerun()
         st.markdown('</div>', unsafe_allow_html=True)
-        
-        st.caption("Не забудьте скачать CSV, чтобы не потерять данные при перезапуске сервера.")
 
 # Если данные есть в памяти, показываем дашборд
 if 'df' in st.session_state and not st.session_state.df.empty:
@@ -304,7 +299,6 @@ if 'df' in st.session_state and not st.session_state.df.empty:
         if re.match(r'\d{2}\.\d{2}\.\d{4}', date_str): 
             return date_str
             
-        # Умный поиск месяцев (защита от опечаток OCR)
         month_map = {
             'янв': '01', 'фев': '02', 'мар': '03', 'апр': '04', 'ма[йя]': '05',
             'июн': '06', 'июл': '07', 'авг': '08', 'сен': '09', 'окт': '10',
