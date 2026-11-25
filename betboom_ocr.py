@@ -1,8 +1,4 @@
-"""OCR parser for BetBoom balance-history screenshots using RapidOCR.
-
-RapidOCR is an ONNX-based engine that provides accurate bounding boxes for
-each text line, preventing close cards from being merged together.
-"""
+"""OCR parser for BetBoom balance-history screenshots using RapidOCR."""
 
 from __future__ import annotations
 
@@ -13,7 +9,6 @@ from typing import Callable, Any
 import cv2
 import numpy as np
 
-# 🪄 Импортируем современный OCR-движок RapidOCR
 from rapidocr import RapidOCR
 
 _ocr_engine: RapidOCR | None = None
@@ -109,7 +104,6 @@ def process_image_bytes(
     file_bytes: bytes,
     progress_callback: Callable[[int, int], None] | None = None,
 ) -> dict[str, Any]:
-    """Parse one screenshot using RapidOCR."""
     result: dict[str, Any] = {
         "bets": [],
         "diagnostics": {
@@ -143,29 +137,34 @@ def process_image_bytes(
 
     try:
         ocr = _get_engine()
-        # RapidOCR возвращает результат в виде: ([[box, text, score], ...], elapse)
-        ocr_results, _ = ocr(image)
+        # 🪄 Исправленный вызов: получаем объект RapidOCROutput
+        ocr_output = ocr(image)
     except Exception as exc:
         result["diagnostics"]["reason"] = f"Ошибка при запуске RapidOCR: {exc}"
         return result
 
-    if not ocr_results:
+    if not ocr_output or not getattr(ocr_output, 'txts', None):
         result["diagnostics"]["reason"] = "Не удалось найти текст на изображении."
         return result
 
-    # 🪄 Группируем текстовые блоки в строки по Y-координате
-    # Каждый элемент ocr_results: [box, text, score], где box = [[x,y], [x,y], [x,y], [x,y]]
-    lines = []
-    for box, text, score in ocr_results:
-        y_center = sum(p[1] for p in box) / 4
-        x_center = sum(p[0] for p in box) / 4
+    # 🪄 Извлекаем данные из атрибутов объекта RapidOCROutput
+    boxes = ocr_output.boxes
+    txts = ocr_output.txts
+    scores = ocr_output.scores
 
-        # Ищем существующую строку, к которой принадлежит этот блок
+    # Группируем текстовые блоки в строки по Y-координате
+    lines = []
+    for i in range(len(txts)):
+        text = txts[i]
+        box = boxes[i]
+        # box имеет форму (4, 2), вычисляем центр
+        y_center = np.mean(box[:, 1])
+        x_center = np.mean(box[:, 0])
+
         matched = False
         for line in lines:
-            if abs(line["y"] - y_center) < 20:  # Допуск по высоте 20 пикселей
+            if abs(line["y"] - y_center) < 20:  # Допуск по высоте
                 line["items"].append({"x": x_center, "text": text})
-                # Обновляем среднюю Y-координату строки
                 line["y"] = (line["y"] * (len(line["items"]) - 1) + y_center) / len(line["items"])
                 matched = True
                 break
@@ -196,13 +195,12 @@ def process_image_bytes(
 
         date_value, time_value, month_number = _parse_date_time(line_text, datetime.now().year)
         
-        # Сумма может быть в этой же строке, так как RapidOCR находит текст в одну строку
+        # Ищем сумму в тексте строки
         amount_match = re.search(r"([+-]\s*\d+(?:[.,]\d{1,2})?)", line_text)
         amount = _parse_signed_amount(amount_match.group(1)) if amount_match else None
 
-        # Если сумму не нашли в этой же строке, ищем в правой части (RapidOCR иногда разделяет)
+        # Если не нашли, ищем в отдельных элементах
         if amount is None:
-            # Находим все элементы в строке, которые содержат цифры и знаки +/-
             for item in line["items"]:
                 if re.search(r"[+-]\s*\d", item["text"]):
                     amount = _parse_signed_amount(item["text"])
@@ -219,7 +217,6 @@ def process_image_bytes(
 
     result["diagnostics"]["detected_cards"] = len(parsed_cards)
 
-    # 🪄 Финальная обработка и фильтрация
     for card in parsed_cards:
         if card["type"] == "transaction":
             result["diagnostics"]["ignored_transactions"] += 1
