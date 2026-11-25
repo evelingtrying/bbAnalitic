@@ -8,7 +8,6 @@ from typing import Callable, Any
 
 import cv2
 import numpy as np
-
 from rapidocr import RapidOCR
 
 _ocr_engine: RapidOCR | None = None
@@ -39,11 +38,14 @@ def _normalize_month(month_text: str) -> int | None:
 
 def _parse_date_time(text: str, year: int) -> tuple[str | None, str | None, int | None]:
     lowered = text.lower().replace("ё", "е")
-    time_match = re.search(r"\b([01]?\d|2[0-3])[:.]([0-5]\d)\b", lowered)
+    
+    # Ищем время в формате 12:34, 12.34 или 12,34
+    time_match = re.search(r"\b([01]?\d|2[0-3])[:.,]\s*([0-5]\d)\b", lowered)
     time_value = None
     if time_match:
         time_value = f"{int(time_match.group(1)):02d}:{time_match.group(2)}"
 
+    # Обработка относительных дат
     if "сегодня" in lowered or "today" in lowered:
         date_value = datetime.now().date()
         return date_value.strftime("%d.%m.%Y"), time_value, date_value.month
@@ -51,50 +53,19 @@ def _parse_date_time(text: str, year: int) -> tuple[str | None, str | None, int 
         date_value = (datetime.now() - timedelta(days=1)).date()
         return date_value.strftime("%d.%m.%Y"), time_value, date_value.month
 
-    date_match = re.search(
-        r"\b(\d{1,2})\s+([a-zа-яё]+)\s+(?:\d{1,2}[:.]\d{2})\b",
-        lowered,
-    )
-    if not date_match:
-        numeric_match = re.search(r"\b(\d{1,2})[./](\d{1,2})(?:[./](20\d{2}))?\b", lowered)
-        if numeric_match:
-            day = int(numeric_match.group(1))
-            month = int(numeric_match.group(2))
-            parsed_year = int(numeric_match.group(3)) if numeric_match.group(3) else year
+    # Ищем день и месяц (например, "22 ноября")
+    date_match = re.search(r"\b(\d{1,2})\s+([a-zа-яё]+)", lowered)
+    if date_match:
+        day = int(date_match.group(1))
+        month = _normalize_month(date_match.group(2))
+        if month:
             try:
-                date_value = datetime(parsed_year, month, day)
+                date_value = datetime(year, month, day)
                 return date_value.strftime("%d.%m.%Y"), time_value, month
             except ValueError:
                 return None, time_value, None
-        return None, time_value, None
-
-    day = int(date_match.group(1))
-    month = _normalize_month(date_match.group(2))
-    if month is None:
-        return None, time_value, None
-    try:
-        date_value = datetime(year, month, day)
-    except ValueError:
-        return None, time_value, month
-    return date_value.strftime("%d.%m.%Y"), time_value, month
-
-def _parse_signed_amount(text: str) -> float | None:
-    normalized = (
-        text.replace("−", "-")
-        .replace("–", "-")
-        .replace("—", "-")
-        .replace("＋", "+")
-        .replace("\n", " ")
-    )
-    # Ищем знак + или -, затем цифры, опционально копейки. Игнорируем знак рубля.
-    match = re.search(r"([+-])\s*(\d+(?:[.,]\d{1,2})?)", normalized)
-    if not match:
-        return None
-    try:
-        number = float(match.group(2).replace(",", "."))
-    except ValueError:
-        return None
-    return number if match.group(1) == "+" else -number
+                
+    return None, time_value, None
 
 
 def process_image_bytes(
@@ -125,7 +96,7 @@ def process_image_bytes(
 
     height, width = image.shape[:2]
     
-    # 🪄 УМНОЕ МАСШТАБИРОВАНИЕ: Если картинка слишком маленькая, увеличиваем её до нормального размера
+    # 🪄 УМНОЕ МАСШТАБИРОВАНИЕ: Если картинка мелкая, увеличиваем её, чтобы нейросеть видела текст
     if width < 1000:
         scale = 1000 / width
         image = cv2.resize(image, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
@@ -171,67 +142,73 @@ def process_image_bytes(
     # Сортируем блоки сверху вниз, затем слева направо
     blocks.sort(key=lambda b: (b["y"], b["x"]))
 
-    # 🪄 СКЛЕИВАЕМ БЛОКИ В ЛОГИЧЕСКИЕ СТРОКИ
+    # 🪄 ГРУППИРУЕМ БЛОКИ В ВИЗУАЛЬНЫЕ СТРОКИ
     lines = []
     current_line = []
     last_y = None
 
     for b in blocks:
-        if last_y is None or abs(b["y"] - last_y) < b["h"] * 0.8:
+        if last_y is None or abs(b["y"] - last_y) < b["h"] * 1.5:
             current_line.append(b)
             last_y = sum(item["y"] for item in current_line) / len(current_line)
         else:
+            current_line.sort(key=lambda x: x["x"])
             lines.append(current_line)
             current_line = [b]
             last_y = b["y"]
     if current_line:
+        current_line.sort(key=lambda x: x["x"])
         lines.append(current_line)
 
-    parsed_cards = []
-    
-    # 🪄 ИЩЕМ "ПРОГНОЗ" И БЕРЕМ СТРОКУ ПОД НИМ
-    for i, line_blocks in enumerate(lines):
-        line_text = " ".join(b["text"] for b in line_blocks)
-        lowered = line_text.lower().replace("ё", "е")
+    parsed_bets = []
+
+    # 🪄 НОВАЯ ЛОГИКА: Ищем строки с суммами, а контекст (дату/время) берем из соседних строк
+    for i, line in enumerate(lines):
+        line_text = " ".join([w['text'] for w in line])
         
-        if "прогноз" in lowered or "транзакц" in lowered:
-            card_type = "transaction" if "транзакц" in lowered else "forecast"
+        # Ищем любую сумму (с плюсом или минусом)
+        amount_match = re.search(r"([+-])\s*(\d+(?:[.,]\d{1,2})?)", line_text)
+        if not amount_match:
+            continue
             
-            # Берем текст текущей строки и ОБЯЗАТЕЛЬНО следующей (где дата и сумма)
-            context_text = line_text
-            if i + 1 < len(lines):
-                next_line_text = " ".join(b["text"] for b in lines[i+1])
-                context_text += " " + next_line_text
+        sign = amount_match.group(1)
+        num_str = amount_match.group(2).replace(",", ".")
+        try:
+            amount = float(num_str)
+            if sign == "-":
+                amount = -amount
+        except ValueError:
+            continue
             
-            date_value, time_value, month_number = _parse_date_time(context_text, datetime.now().year)
-            amount = _parse_signed_amount(context_text)
-
-            parsed_cards.append({
-                "type": card_type,
-                "text": context_text,
-                "amount": amount,
-                "date": date_value,
-                "time": time_value,
-            })
-
-    result["diagnostics"]["detected_cards"] = len(parsed_cards)
-
-    for card in parsed_cards:
-        if card["type"] == "transaction":
+        # Собираем контекст (текущая строка + предыдущая + следующая)
+        context = line_text
+        if i > 0:
+            context = " ".join([w['text'] for w in lines[i-1]]) + " " + context
+        if i + 1 < len(lines):
+            context = context + " " + " ".join([w['text'] for w in lines[i+1]])
+            
+        # Если в контексте есть слово "Транзакция" — пропускаем (это не ставка)
+        if "транзакц" in context.lower() or "транзакц" in line_text.lower():
             result["diagnostics"]["ignored_transactions"] += 1
             continue
-
-        if card["date"] is None or card["time"] is None or card["amount"] is None:
+            
+        date_value, time_value, _ = _parse_date_time(context, datetime.now().year)
+        
+        if date_value and time_value:
+            parsed_bets.append({
+                "Дата": date_value,
+                "Время": time_value,
+                "Результат": "Выигрыш" if amount > 0 else "Проигрыш",
+                "Сумма_изменения": amount
+            })
+        else:
             result["diagnostics"]["skipped_cards"] += 1
-            continue
 
-        outcome = "Выигрыш" if card["amount"] > 0 else "Проигрыш" if card["amount"] < 0 else "Возврат"
-        result["bets"].append({
-            "Дата": card["date"],
-            "Время": card["time"],
-            "Результат": outcome,
-            "Сумма_изменения": float(card["amount"]),
-        })
-
-    result["diagnostics"]["recognized_bets"] = len(result["bets"])
+    result["diagnostics"]["detected_cards"] = len(parsed_bets) + result["diagnostics"]["ignored_transactions"] + result["diagnostics"]["skipped_cards"]
+    result["bets"] = parsed_bets
+    result["diagnostics"]["recognized_bets"] = len(parsed_bets)
+    
+    if not parsed_bets:
+        result["diagnostics"]["reason"] = "Текст прочитан, но не найдено ни одной ставки с датой и суммой."
+        
     return result
