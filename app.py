@@ -7,7 +7,6 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-# Импортируем ваш новый OCR-модуль
 from betboom_ocr import process_image_bytes
 
 st.set_page_config(
@@ -152,7 +151,6 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-# Шапка сайта
 st.markdown(
     """
     <div class="app-brand">
@@ -164,7 +162,7 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-# 🪄 ФУНКЦИЯ КРАСИВОГО ОТОБРАЖЕНИЯ ДЕНЕГ (с копейками, если они есть)
+# 🪄 ФУНКЦИЯ КРАСИВОГО ОТОБРАЖЕНИЯ ДЕНЕГ (сохраняет копейки)
 def format_money(val: float) -> str:
     if val == int(val):
         return f"{int(val):,} ₽".replace(",", " ")
