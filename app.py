@@ -121,18 +121,20 @@ st.markdown("""
 def process_uploaded_images(uploaded_files):
     all_bets_data = []
     progress_bar = st.progress(0)
+    status_text = st.empty()
     total_files = len(uploaded_files)
     
     for idx, uploaded_file in enumerate(uploaded_files):
+        status_text.text(f"Обработка файла {idx+1} из {total_files}...")
         file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
         img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
         if img is None: continue
 
         h, w = img.shape[:2]
         
-        # 🪄 Нарезка: по 5000 пикселей с перекрытием 800, чтобы Tesseract не сходил с ума от гигантских картинок
-        max_height = 5000
-        overlap = 800
+        # 🪄 Нарезка: по 4000 пикселей с перекрытием 400
+        max_height = 4000
+        overlap = 400
         
         chunks = []
         y = 0
@@ -142,80 +144,75 @@ def process_uploaded_images(uploaded_files):
             if y2 == h: break
             y = y2 - overlap
 
-        for chunk_idx, chunk in enumerate(chunks):
+        for chunk in chunks:
             gray = cv2.cvtColor(chunk, cv2.COLOR_BGR2GRAY)
             
             # Инверсия для темной темы
             if np.mean(gray) < 128: 
                 gray = cv2.bitwise_not(gray)
                 
-            # Увеличение x2 (оптимально для OCR)
+            # Увеличение в 2 раза (оптимально)
             gray = cv2.resize(gray, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
-            
-            # Бинаризация Оцу (лучше работает с текстом)
-            _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
 
-            # Читаем как единый блок текста (psm 6)
-            text = pytesseract.image_to_string(thresh, lang='rus+eng', config='--psm 6')
+            # Без жесткого порога (threshold), чтобы не потерять цветные + и -
+            text = pytesseract.image_to_string(gray, lang='rus+eng', config='--psm 6')
 
             lines = text.split('\n')
             current_date = None
             current_time = None
-            prev_line = ""
 
             for line in lines:
                 line = line.strip()
                 if not line: continue
 
-                # Поиск даты (например: "24 ноября")
-                date_match = re.search(r'(\d{1,2}\s+[А-Яа-я]+)', line)
+                # 1. Поиск даты (например: "24 ноября")
+                date_match = re.search(r'(\d{1,2}\s+[а-яА-Я]+)', line)
                 if date_match:
                     current_date = date_match.group(1)
 
-                # Поиск времени (например: "19:25")
+                # 2. Поиск времени (например: "19:25")
                 time_match = re.search(r'(\d{2}:\d{2})', line)
                 if time_match:
                     current_time = time_match.group(1)
 
-                # Поиск суммы (например: "+1 038 ₽" или "-500 ₽")
-                # Ищем знак + или -, затем цифры и пробелы
-                amount_match = re.search(r'([+-]\s*\d[\d\s]*)(?:\s*[₽pP])?', line)
+                # 3. Поиск суммы (например: "+ 1 038 ₽" или "- 500 ₽")
+                # Учитываем разные тире: -, —, –, а также случайные * и _
+                amount_match = re.search(r'([+-—–*_]\s*\d[\d\s]*)(?:\s*[₽pPрR])?', line)
                 
                 if amount_match and current_date and current_time:
-                    # Очищаем сумму от мусора
-                    amount_str = amount_match.group(1).replace(' ', '').replace('₽', '').replace('p', '').replace('P', '')
+                    # Отсеиваем транзакции. Проверяем только начало строки
+                    lower_line = line.lower()
+                    if (lower_line.startswith('транзакц') or 
+                        lower_line.startswith('вывод') or 
+                        lower_line.startswith('пополнение') or 
+                        lower_line.startswith('депозит')):
+                        continue
+
+                    amount_str = amount_match.group(1)
+                    amount_str = amount_str.replace(' ', '').replace('—', '-').replace('–', '-')
                     amount_str = re.sub(r'[^\d+-]', '', amount_str)
 
                     if amount_str and (amount_str[0] in '+-'):
                         try:
                             amount_val = int(amount_str)
-                            
-                            # Проверка на транзакции (выводы/пополнения)
-                            is_transaction = False
-                            combined_text = (prev_line + " " + line).lower()
-                            for kw in ['транзакц', 'перевод', 'вывод', 'пополнение', 'депозит']:
-                                if kw in combined_text:
-                                    is_transaction = True
-                                    break
-
-                            if not is_transaction:
-                                all_bets_data.append({
-                                    "Дата": current_date.strip(), 
-                                    "Время": current_time.strip(), 
-                                    "Результат": "Выигрыш" if amount_val > 0 else "Проигрыш", 
-                                    "Сумма_изменения": amount_val
-                                })
+                            all_bets_data.append({
+                                "Дата": current_date.strip(), 
+                                "Время": current_time.strip(), 
+                                "Результат": "Выигрыш" if amount_val > 0 else "Проигрыш", 
+                                "Сумма_изменения": amount_val
+                            })
+                            # Сбрасываем время, чтобы не задублировать сумму на следующей строке
+                            current_time = None 
                         except ValueError: 
                             pass
-                prev_line = line
 
-        # Обновляем прогресс бар
         progress_bar.progress((idx + 1) / total_files)
 
+    status_text.empty()
+    progress_bar.empty()
+    
     df_res = pd.DataFrame(all_bets_data)
-    if not df_res.empty:
-        # Жесткое удаление дубликатов (на случай перекрытия чанков)
-        df_res = df_res.drop_duplicates(subset=['Дата', 'Время', 'Сумма_изменения'])
+    # ❌ МЫ УБРАЛИ drop_duplicates, ЧТОБЫ НЕ ТЕРЯТЬ РЕАЛЬНЫЕ СТАВКИ
     return df_res
 
 # ==========================================
@@ -238,8 +235,9 @@ with st.sidebar:
                     if 'df' not in st.session_state:
                         st.session_state.df = new_df
                     else:
+                        # При объединении старых и новых данных просто конкатенируем
                         combined = pd.concat([st.session_state.df, new_df])
-                        st.session_state.df = combined.drop_duplicates(subset=['Дата', 'Время', 'Сумма_изменения'])
+                        st.session_state.df = combined.reset_index(drop=True)
                     st.success(f"Данные обновлены! Распознано ставок: {len(new_df)}")
                     st.rerun()
                 else:
