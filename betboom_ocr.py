@@ -115,6 +115,7 @@ def process_image_bytes(
             "ignored_transactions": 0,
             "skipped_cards": 0,
             "reason": None,
+            "raw_text": ""
         },
     }
 
@@ -137,7 +138,6 @@ def process_image_bytes(
 
     try:
         ocr = _get_engine()
-        # 🪄 Исправленный вызов: получаем объект RapidOCROutput
         ocr_output = ocr(image)
     except Exception as exc:
         result["diagnostics"]["reason"] = f"Ошибка при запуске RapidOCR: {exc}"
@@ -147,73 +147,69 @@ def process_image_bytes(
         result["diagnostics"]["reason"] = "Не удалось найти текст на изображении."
         return result
 
-    # 🪄 Извлекаем данные из атрибутов объекта RapidOCROutput
     boxes = ocr_output.boxes
     txts = ocr_output.txts
-    scores = ocr_output.scores
+    
+    result["diagnostics"]["raw_text"] = "\n".join(txts)
 
-    # Группируем текстовые блоки в строки по Y-координате
-    lines = []
+    # 🪄 Извлекаем все блоки текста с их координатами
+    blocks = []
     for i in range(len(txts)):
         text = txts[i]
         box = boxes[i]
-        # box имеет форму (4, 2), вычисляем центр
-        y_center = np.mean(box[:, 1])
-        x_center = np.mean(box[:, 0])
-
-        matched = False
-        for line in lines:
-            if abs(line["y"] - y_center) < 20:  # Допуск по высоте
-                line["items"].append({"x": x_center, "text": text})
-                line["y"] = (line["y"] * (len(line["items"]) - 1) + y_center) / len(line["items"])
-                matched = True
-                break
-
-        if not matched:
-            lines.append({"y": y_center, "items": [{"x": x_center, "text": text}]})
-
-    # Сортируем строки сверху вниз
-    lines.sort(key=lambda l: l["y"])
+        x_center = float(np.mean(box[:, 0]))
+        y_center = float(np.mean(box[:, 1]))
+        y_min = float(np.min(box[:, 1]))
+        y_max = float(np.max(box[:, 1]))
+        h = y_max - y_min
+        
+        blocks.append({
+            "text": text,
+            "x": x_center,
+            "y": y_center,
+            "h": h,
+            "used": False
+        })
 
     parsed_cards = []
-    for line in lines:
-        # Сортируем элементы внутри строки слева направо
-        line["items"].sort(key=lambda i: i["x"])
-        
-        line_text = " ".join(item["text"] for item in line["items"])
-        lowered = line_text.lower().replace("ё", "е")
-
-        if "транзакц" in lowered:
-            card_type = "transaction"
-        elif "прогноз" in lowered:
-            card_type = "forecast"
-        else:
-            card_type = "unknown"
-
-        if card_type == "unknown":
+    
+    # 🪄 Ищем "якоря" (Прогноз или Транзакция) и собираем блоки вокруг них
+    for i, block in enumerate(blocks):
+        if block["used"]:
             continue
 
-        date_value, time_value, month_number = _parse_date_time(line_text, datetime.now().year)
-        
-        # Ищем сумму в тексте строки
-        amount_match = re.search(r"([+-]\s*\d+(?:[.,]\d{1,2})?)", line_text)
-        amount = _parse_signed_amount(amount_match.group(1)) if amount_match else None
+        lowered = block["text"].lower().replace("ё", "е")
+        if "прогноз" in lowered or "транзакц" in lowered:
+            card_type = "transaction" if "транзакц" in lowered else "forecast"
+            
+            # Находим все блоки на этой же горизонтальной линии
+            line_blocks = [block]
+            block["used"] = True
+            
+            for j, other in enumerate(blocks):
+                if j == i or other["used"]:
+                    continue
+                # Если блок находится примерно на той же высоте (допуск = 1.5 высоты текста)
+                if abs(other["y"] - block["y"]) < block["h"] * 1.5:
+                    line_blocks.append(other)
+                    other["used"] = True
+            
+            # Сортируем блоки слева направо
+            line_blocks.sort(key=lambda b: b["x"])
+            full_line_text = " ".join(b["text"] for b in line_blocks)
+            
+            # Парсим дату, время и сумму из собранной строки
+            date_value, time_value, month_number = _parse_date_time(full_line_text, datetime.now().year)
+            amount_match = re.search(r"([+-]\s*\d+(?:[.,]\d{1,2})?)", full_line_text)
+            amount = _parse_signed_amount(amount_match.group(1)) if amount_match else None
 
-        # Если не нашли, ищем в отдельных элементах
-        if amount is None:
-            for item in line["items"]:
-                if re.search(r"[+-]\s*\d", item["text"]):
-                    amount = _parse_signed_amount(item["text"])
-                    if amount is not None:
-                        break
-
-        parsed_cards.append({
-            "type": card_type,
-            "text": line_text,
-            "amount": amount,
-            "date": date_value,
-            "time": time_value,
-        })
+            parsed_cards.append({
+                "type": card_type,
+                "text": full_line_text,
+                "amount": amount,
+                "date": date_value,
+                "time": time_value,
+            })
 
     result["diagnostics"]["detected_cards"] = len(parsed_cards)
 
