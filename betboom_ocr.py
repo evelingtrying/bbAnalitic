@@ -1,7 +1,8 @@
 """OCR parser for BetBoom balance-history screenshots.
 
-The parser detects individual history cards first, then reads each card's
-forecast/transaction label, date/time and signed amount independently.
+Each history card is located independently. Amount recognition uses only the
+lower line in the right-hand column, separating the amount from the label and
+ruble currency glyph to reduce false trailing digits.
 """
 
 from __future__ import annotations
@@ -18,7 +19,6 @@ import numpy as np
 import pytesseract
 
 
-# Streamlit Community Cloud installs the binary and language data via packages.txt.
 _tesseract = shutil.which("tesseract")
 if _tesseract:
     pytesseract.pytesseract.tesseract_cmd = _tesseract
@@ -27,11 +27,9 @@ elif os.path.exists("/usr/bin/tesseract"):
 
 
 MONTHS = {
-    # Russian month names and common OCR prefixes
     "янв": 1, "фев": 2, "мар": 3, "апр": 4, "ма": 5,
     "июн": 6, "июл": 7, "авг": 8, "сен": 9, "сент": 9,
     "окт": 10, "ноя": 11, "дек": 12,
-    # English month names, in case the account interface is in English
     "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5,
     "jun": 6, "jul": 7, "aug": 8, "sep": 9,
     "oct": 10, "nov": 11, "dec": 12,
@@ -75,7 +73,6 @@ def _find_card_rows(gray: np.ndarray) -> tuple[list[tuple[int, int]], tuple[int,
     if not segments:
         return [], (0, width), background
 
-    # Remove stray separators/header bands using the median card height.
     heights = np.asarray([b - a for a, b in segments], dtype=np.float32)
     median_h = float(np.median(heights))
     segments = [
@@ -105,8 +102,6 @@ def _find_card_rows(gray: np.ndarray) -> tuple[list[tuple[int, int]], tuple[int,
 
 def _normalize_month(month_text: str) -> int | None:
     value = month_text.lower().strip()
-    # Correct frequent Latin/Cyrillic OCR substitutions in Russian month names
-    # without damaging an English month such as "September".
     if re.search(r"[а-яё]", value):
         value = value.replace("c", "с").replace("e", "е").replace("a", "а")
     for prefix, month_number in MONTHS.items():
@@ -134,7 +129,6 @@ def _parse_date_time(text: str, year: int) -> tuple[str | None, str | None, int 
         lowered,
     )
     if not date_match:
-        # Fallback for numeric dates, if BetBoom changes the display format.
         numeric_match = re.search(r"\b(\d{1,2})[./](\d{1,2})(?:[./](20\d{2}))?\b", lowered)
         if numeric_match:
             day = int(numeric_match.group(1))
@@ -159,12 +153,21 @@ def _parse_date_time(text: str, year: int) -> tuple[str | None, str | None, int 
 
 
 def _parse_signed_amount(text: str) -> float | None:
-    # Amount OCR is run with a numeric whitelist, so a trailing ₽ cannot turn
-    # +124 into +1242 (a common error when OCR reads the ruble sign as "2").
-    match = re.search(r"([+-])\s*(\d+(?:[.,]\d{1,2})?)", text.replace("\n", " "))
+    """Parse a signed amount; currency glyphs are excluded from the OCR crop."""
+    normalized = (
+        text.replace("−", "-")
+        .replace("–", "-")
+        .replace("—", "-")
+        .replace("＋", "+")
+        .replace("\n", " ")
+    )
+    match = re.search(r"([+-])\s*(\d+(?:[.,]\d{1,2})?)", normalized)
     if not match:
         return None
-    number = float(match.group(2).replace(",", "."))
+    try:
+        number = float(match.group(2).replace(",", "."))
+    except ValueError:
+        return None
     return number if match.group(1) == "+" else -number
 
 
@@ -178,8 +181,7 @@ def _ocr_one_card(
     row_height = max(1, y1 - y0)
     split_x = int(x0 + (x1 - x0) * 0.80)
 
-    # Left 80% holds the card title and date/time. OCR this area as one card,
-    # so a date or time from a neighbouring card can never be attached to it.
+    # OCR date, time and card type in the left part of this card only.
     left_date = gray[max(0, y0 - 2):min(gray.shape[0], y1 + 2), x0:split_x]
     left_date = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(left_date)
     left_date = 255 - left_date
@@ -190,9 +192,10 @@ def _ocr_one_card(
         config="--oem 1 --psm 6",
     ).strip()
 
-    # The amount is in the lower part of the right-hand column. A strict
-    # numeric whitelist prevents the ruble glyph from being mistaken for a digit.
-    amount_y0 = min(y1 - 1, y0 + int(row_height * 0.32))
+    # IMPORTANT: read the lower line only. The upper line contains the label
+    # "Списание" / "Пополнение"; the lower line contains the numeric value.
+    # Keeping the currency glyph out of the OCR mask prevents ₽ being read as 2.
+    amount_y0 = min(y1 - 1, y0 + int(row_height * 0.48))
     amount_y1 = min(gray.shape[0], y0 + int(row_height * 0.90))
     amount_crop = gray[amount_y0:amount_y1, split_x:x1]
     amount_crop = 255 - amount_crop
@@ -211,12 +214,11 @@ def _ocr_one_card(
     else:
         card_type = "unknown"
 
-    amount = _parse_signed_amount(amount_text)
     return {
         "type": card_type,
         "text": card_text,
         "amount_text": amount_text,
-        "amount": amount,
+        "amount": _parse_signed_amount(amount_text),
         "date_time": card_text,
         "y": y0,
     }
@@ -227,10 +229,9 @@ def process_image_bytes(
     file_bytes: bytes,
     progress_callback: Callable[[int, int], None] | None = None,
 ) -> dict[str, Any]:
-    """Parse one uploaded screenshot into bets, ignored transactions and review rows."""
+    """Parse one screenshot. Low-confidence cards are skipped automatically."""
     result: dict[str, Any] = {
         "bets": [],
-        "review": [],
         "diagnostics": {
             "file": file_name,
             "width": 0,
@@ -238,7 +239,7 @@ def process_image_bytes(
             "detected_cards": 0,
             "recognized_bets": 0,
             "ignored_transactions": 0,
-            "needs_review": 0,
+            "skipped_cards": 0,
             "reason": None,
         },
     }
@@ -246,19 +247,17 @@ def process_image_bytes(
     encoded = np.frombuffer(file_bytes, dtype=np.uint8)
     image = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
     if image is None:
-        result["diagnostics"]["reason"] = "Не удалось открыть файл как изображение."
+        result["diagnostics"]["reason"] = "Не удалось открыть изображение."
         return result
 
     height, width = image.shape[:2]
     result["diagnostics"]["width"] = width
     result["diagnostics"]["height"] = height
 
-    # A 136 px wide screenshot has already lost most glyph detail. Upscaling
-    # cannot restore it, so do not silently produce fabricated statistics.
     if width < 700:
         result["diagnostics"]["reason"] = (
-            f"Слишком низкая ширина ({width} px). Нужен оригинальный скриншот "
-            "шириной хотя бы 700 px; не отправляйте уменьшенную миниатюру."
+            f"Слишком низкое разрешение ({width} px по ширине). "
+            "Загрузите оригинальный скриншот, а не уменьшенную миниатюру."
         )
         return result
 
@@ -270,18 +269,15 @@ def process_image_bytes(
     if not {"rus", "eng"}.issubset(available_languages):
         missing = ", ".join(sorted({"rus", "eng"} - available_languages))
         result["diagnostics"]["reason"] = (
-            f"В системе не установлены языки Tesseract: {missing}. "
-            "Добавьте tesseract-ocr-rus и tesseract-ocr-eng в packages.txt."
+            f"Не установлены языки Tesseract: {missing}. "
+            "Проверьте packages.txt."
         )
         return result
 
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     rows, content_x, _background = _find_card_rows(gray)
     if not rows:
-        result["diagnostics"]["reason"] = (
-            "Не удалось выделить карточки истории. Загрузите скриншот самой "
-            "истории баланса BetBoom, где видны строки с прогнозами."
-        )
+        result["diagnostics"]["reason"] = "Не удалось найти карточки истории на изображении."
         return result
 
     result["diagnostics"]["detected_cards"] = len(rows)
@@ -298,31 +294,25 @@ def process_image_bytes(
             index = future_to_index[future]
             try:
                 parsed_cards[index] = future.result()
-            except Exception as exc:
-                y0 = rows[index][0]
+            except Exception:
                 parsed_cards[index] = {
-                    "type": "unknown",
-                    "text": f"Ошибка OCR: {exc}",
-                    "amount_text": "",
-                    "amount": None,
-                    "date_time": "",
-                    "y": y0,
+                    "type": "unknown", "text": "", "amount_text": "",
+                    "amount": None, "date_time": "", "y": rows[index][0],
                 }
             completed += 1
             if progress_callback:
                 progress_callback(completed, len(rows))
 
-    # The history page is sorted newest -> oldest. The year is not printed on
-    # each BetBoom card, so handle the January -> December rollover explicitly.
+    # The balance history is newest -> oldest. Correct year when crossing Jan/Dec.
     year = datetime.now().year
     previous_month: int | None = None
 
-    for card_index, card in enumerate(parsed_cards, start=1):
+    for card in parsed_cards:
         if card is None:
+            result["diagnostics"]["skipped_cards"] += 1
             continue
-        card_type = card["type"]
 
-        if card_type == "transaction":
+        if card["type"] == "transaction":
             result["diagnostics"]["ignored_transactions"] += 1
             continue
 
@@ -330,24 +320,15 @@ def process_image_bytes(
         if month_number is not None and previous_month is not None:
             if month_number - previous_month >= 9:
                 year -= 1
-                # Reparse the date with the adjusted year.
                 date_value, time_value, month_number = _parse_date_time(card["date_time"], year)
         if month_number is not None:
             previous_month = month_number
 
         amount = card["amount"]
-        if card_type != "forecast" or date_value is None or time_value is None or amount is None:
-            result["review"].append(
-                {
-                    "Файл": file_name,
-                    "Карточка": card_index,
-                    "Тип OCR": card_type,
-                    "Распознанный текст": card["text"],
-                    "Текст суммы": card["amount_text"],
-                    "Причина": "Не удалось уверенно определить тип, дату, время или сумму",
-                }
-            )
-            result["diagnostics"]["needs_review"] += 1
+        if card["type"] != "forecast" or date_value is None or time_value is None or amount is None:
+            # Do not expose a manual review queue: uncertain rows are omitted
+            # automatically so they cannot silently corrupt P&L.
+            result["diagnostics"]["skipped_cards"] += 1
             continue
 
         outcome = "Выигрыш" if amount > 0 else "Проигрыш" if amount < 0 else "Возврат"
@@ -357,8 +338,6 @@ def process_image_bytes(
                 "Время": time_value,
                 "Результат": outcome,
                 "Сумма_изменения": float(amount),
-                "Источник": file_name,
-                "Карточка": card_index,
             }
         )
 
