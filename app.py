@@ -164,6 +164,13 @@ st.markdown(
     unsafe_allow_html=True
 )
 
+# 🪄 ФУНКЦИЯ КРАСИВОГО ОТОБРАЖЕНИЯ ДЕНЕГ (с копейками, если они есть)
+def format_money(val: float) -> str:
+    if val == int(val):
+        return f"{int(val):,} ₽".replace(",", " ")
+    else:
+        return f"{val:,.2f} ₽".replace(",", " ").replace(".00", "")
+
 # -----------------------------------------------------------------------------
 # Боковая панель
 # -----------------------------------------------------------------------------
@@ -179,7 +186,6 @@ with st.sidebar:
                 all_new_bets = []
                 diagnostics = []
                 
-                # Используем ваш новый модуль OCR
                 for uploaded_file in uploaded_files:
                     file_bytes = uploaded_file.read()
                     res = process_image_bytes(uploaded_file.name, file_bytes)
@@ -196,7 +202,6 @@ with st.sidebar:
                     st.success(f"Данные обновлены! Распознано новых ставок: {len(new_df)}")
                 else:
                     st.error("Не удалось распознать ставки.")
-                    # Показываем причину, если OCR вернул ошибку
                     for diag in diagnostics:
                         if diag.get("reason"):
                             st.warning(f"{diag['file']}: {diag['reason']}")
@@ -230,7 +235,6 @@ with st.sidebar:
 if 'df' in st.session_state and not st.session_state.df.empty:
     df = st.session_state.df.copy()
     
-    # Очистка и сортировка дат
     df['Дата_парсинг'] = pd.to_datetime(df['Дата'], format='%d.%m.%Y', errors='coerce')
     df['Время_парсинг'] = pd.to_datetime(df['Время'], format='%H:%M', errors='coerce').dt.time
     df = df.sort_values(by=['Дата_парсинг', 'Время_парсинг'], ascending=[False, False])
@@ -262,10 +266,10 @@ if 'df' in st.session_state and not st.session_state.df.empty:
         if total_pnl > 0: delta_class, delta_sign = "plus", "+"
         elif total_pnl < 0: delta_class, delta_sign = "minus", ""
         else: delta_class, delta_sign = "plus", ""
-        st.markdown(f'<div class="custom-card"><div class="card-title">Чистый P&L</div><div class="card-value">{total_pnl:,.0f} ₽</div><div class="card-delta pnl-delta {delta_class}">{delta_sign}{total_pnl:,.0f} ₽</div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="custom-card"><div class="card-title">Чистый P&L</div><div class="card-value">{format_money(total_pnl)}</div><div class="card-delta pnl-delta {delta_class}">{delta_sign}{format_money(total_pnl)}</div></div>', unsafe_allow_html=True)
                 
     with col4:
-        st.markdown(f'<div class="custom-card card-right"><div class="card-title">Средняя ставка</div><div class="card-value">{avg_bet:,.0f} ₽</div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="custom-card card-right"><div class="card-title">Средняя ставка</div><div class="card-value">{format_money(avg_bet)}</div></div>', unsafe_allow_html=True)
 
     st.write("")
     st.write("")
@@ -300,7 +304,7 @@ if 'df' in st.session_state and not st.session_state.df.empty:
                     for _, row in df_month.iterrows():
                         result_html = f'<span class="win-text">{row["Результат"]}</span>' if row["Результат"] == 'Выигрыш' else f'<span class="loss-text">{row["Результат"]}</span>'
                         amount_class = "win-text" if row["Сумма_изменения"] > 0 else "loss-text"
-                        html_table += f'<tr><td>{row["Дата"]}</td><td>{row["Время"]}</td><td>{result_html}</td><td><span class="{amount_class}">{row["Сумма_изменения"]:,.0f} ₽</span></td></tr>'
+                        html_table += f'<tr><td>{row["Дата"]}</td><td>{row["Время"]}</td><td>{result_html}</td><td><span class="{amount_class}">{format_money(row["Сумма_изменения"])}</span></td></tr>'
                     html_table += '</tbody></table>'
                     st.markdown(html_table, unsafe_allow_html=True)
         else:
@@ -317,31 +321,31 @@ if 'df' in st.session_state and not st.session_state.df.empty:
         c1, c2 = st.columns(2)
         with c1:
             if max_win_row is not None:
-                st.markdown(f'<div class="custom-card" style="margin-bottom: -10px;"><div class="card-title">💎 Самый крупный выигрыш</div><div class="card-value winrate-green">+{max_win_row["Сумма_изменения"]:,.0f} ₽</div></div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="custom-card" style="margin-bottom: -10px;"><div class="card-title">💎 Самый крупный выигрыш</div><div class="card-value winrate-green">+{format_money(max_win_row["Сумма_изменения"])}</div></div>', unsafe_allow_html=True)
                 with st.expander("Показать детали"):
                     st.write(f"📅 **Дата:** {max_win_row['Дата']}"); st.write(f"⏰ **Время:** {max_win_row['Время']}")
             
-            st.markdown(f'<div class="custom-card" style="margin-bottom: -10px;"><div class="card-title">📥 Сумма всех выигрышей</div><div class="card-value winrate-green">+{wins_df["Сумма_изменения"].sum():,.0f} ₽</div></div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="custom-card" style="margin-bottom: -10px;"><div class="card-title">📥 Сумма всех выигрышей</div><div class="card-value winrate-green">+{format_money(wins_df["Сумма_изменения"].sum())}</div></div>', unsafe_allow_html=True)
             with st.expander("Показать детали"):
                 st.write(f"🎯 **Количество выигрышных ставок:** {len(wins_df)}")
-                st.write(f"📈 **Средний выигрыш:** +{wins_df['Сумма_изменения'].mean():,.0f} ₽")
+                st.write(f"📈 **Средний выигрыш:** +{format_money(wins_df['Сумма_изменения'].mean())}")
             
             unique_days = df['Дата_парсинг'].nunique()
             st.markdown(f'<div class="custom-card" style="margin-top: 10px;"><div class="card-title">📅 Дней со ставками</div><div class="card-value" style="color: #818cf8;">{unique_days}</div></div>', unsafe_allow_html=True)
             
         with c2:
             if max_loss_row is not None:
-                st.markdown(f'<div class="custom-card" style="margin-bottom: -10px;"><div class="card-title">💀 Самый крупный проигрыш</div><div class="card-value winrate-red">{max_loss_row["Сумма_изменения"]:,.0f} ₽</div></div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="custom-card" style="margin-bottom: -10px;"><div class="card-title">💀 Самый крупный проигрыш</div><div class="card-value winrate-red">{format_money(max_loss_row["Сумма_изменения"])}</div></div>', unsafe_allow_html=True)
                 with st.expander("Показать детали"):
                     st.write(f"📅 **Дата:** {max_loss_row['Дата']}"); st.write(f"⏰ **Время:** {max_loss_row['Время']}")
             
-            st.markdown(f'<div class="custom-card" style="margin-bottom: -10px;"><div class="card-title">📤 Сумма всех проигрышей</div><div class="card-value winrate-red">{losses_df["Сумма_изменения"].sum():,.0f} ₽</div></div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="custom-card" style="margin-bottom: -10px;"><div class="card-title">📤 Сумма всех проигрышей</div><div class="card-value winrate-red">{format_money(losses_df["Сумма_изменения"].sum())}</div></div>', unsafe_allow_html=True)
             with st.expander("Показать детали"):
                 st.write(f"🎯 **Количество проигрышных ставок:** {len(losses_df)}")
-                st.write(f"📉 **Средний проигрыш:** {losses_df['Сумма_изменения'].mean():,.0f} ₽")
+                st.write(f"📉 **Средний проигрыш:** {format_money(losses_df['Сумма_изменения'].mean())}")
             
             most_common_bet = abs(df['Сумма_изменения'].mode()[0]) if not df.empty else 0
-            st.markdown(f'<div class="custom-card" style="margin-top: 10px;"><div class="card-title">🎯 Самая частая ставка</div><div class="card-value" style="color: #c084fc;">{most_common_bet:,.0f} ₽</div></div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="custom-card" style="margin-top: 10px;"><div class="card-title">🎯 Самая частая ставка</div><div class="card-value" style="color: #c084fc;">{format_money(most_common_bet)}</div></div>', unsafe_allow_html=True)
 
 else:
     st.info("👈 Добро пожаловать! Чтобы начать, загрузите скриншоты истории ставок в левой панели.")
