@@ -150,35 +150,26 @@ def process_uploaded_images(uploaded_files):
 
         for chunk in chunks:
             gray = cv2.cvtColor(chunk, cv2.COLOR_BGR2GRAY)
-            
-            # 🪄 ОГРОМНОЕ УВЕЛИЧЕНИЕ для мелкого текста (х3)
             gray = cv2.resize(gray, None, fx=3.0, fy=3.0, interpolation=cv2.INTER_CUBIC)
 
             try:
-                # image_to_data позволяет получить координаты слов, чтобы правильно собрать строку
                 d = pytesseract.image_to_data(gray, lang='rus+eng', config='--psm 6', output_type=Output.DICT)
-            except Exception as e:
+            except Exception:
                 continue
 
             n_boxes = len(d['text'])
             lines = {}
             
-            # Группируем слова в строки
             for i in range(n_boxes):
                 if int(d['conf'][i]) > 20 and d['text'][i].strip():
                     key = (d['block_num'][i], d['par_num'][i], d['line_num'][i])
                     if key not in lines:
                         lines[key] = []
-                    lines[key].append({
-                        'text': d['text'][i],
-                        'left': d['left'][i]
-                    })
+                    lines[key].append({'text': d['text'][i], 'left': d['left'][i]})
 
-            # Сортируем строки сверху вниз
             sorted_keys = sorted(lines.keys(), key=lambda k: (k[0], k[1], k[2]))
 
             for key in sorted_keys:
-                # Сортируем слова в строке слева направо
                 line_words = sorted(lines[key], key=lambda x: x['left'])
                 line_text = " ".join([w['text'] for w in line_words])
                 lower_line = line_text.lower()
@@ -203,20 +194,14 @@ def process_uploaded_images(uploaded_files):
                 amount_match = re.search(r'([+-])\s*(\d[\d\s]*)', line_text)
                 
                 if amount_match and current_date and current_time:
-                    # Фильтр транзакций
                     if 'транзакция' in lower_line or 'вывод' in lower_line:
                         current_time = None
                         continue
 
                     sign = amount_match.group(1)
                     raw_amount = amount_match.group(2).strip()
-                    
-                    # Убираем копейки (всё после точки или запятой)
                     raw_amount = raw_amount.split('.')[0].split(',')[0]
 
-                    # 🪄 УМНЫЙ РАЗБОР: отделяем знак рубля, который Tesseract читает как '2'
-                    # "271 2" -> ['271', '2'] -> берем '271'
-                    # "1 271 2" -> ['1', '271', '2'] -> берем '1' и '271'
                     parts = raw_amount.split()
                     valid_parts = []
                     for i, p in enumerate(parts):
@@ -226,7 +211,7 @@ def process_uploaded_images(uploaded_files):
                             valid_parts.append(p)
                     
                     amount_str = "".join(valid_parts)
-                    amount_str = re.sub(r'[^\d]', '', amount_str) # Оставляем только цифры
+                    amount_str = re.sub(r'[^\d]', '', amount_str)
 
                     if amount_str:
                         try:
@@ -241,9 +226,7 @@ def process_uploaded_images(uploaded_files):
                                 "Сумма_изменения": amount_val
                             }
                             
-                            if not all_bets_data or all_bets_data[-1] != new_bet:
-                                all_bets_data.append(new_bet)
-                                
+                            all_bets_data.append(new_bet)
                             current_time = None 
                         except ValueError: 
                             pass
@@ -254,6 +237,12 @@ def process_uploaded_images(uploaded_files):
     progress_bar.empty()
     
     df_res = pd.DataFrame(all_bets_data)
+    
+    # 🪄 УДАЛЕНИЕ ДУБЛИКАТОВ
+    # Убирает наложения кусков, но оставляет реальные ставки, сделанные в одну минуту
+    if not df_res.empty:
+        df_res = df_res.drop_duplicates(subset=['Дата', 'Время', 'Сумма_изменения'], keep='first')
+        
     return df_res
 
 # ==========================================
@@ -277,8 +266,8 @@ with st.sidebar:
                         st.session_state.df = new_df
                     else:
                         combined = pd.concat([st.session_state.df, new_df])
-                        st.session_state.df = combined.reset_index(drop=True)
-                    st.success(f"Данные обновлены! Распознано ставок: {len(new_df)}")
+                        st.session_state.df = combined.drop_duplicates(subset=['Дата', 'Время', 'Сумма_изменения'], keep='first').reset_index(drop=True)
+                    st.success(f"Данные обновлены! Распознано уникальных ставок: {len(new_df)}")
                     st.rerun()
                 else:
                     st.error("Не удалось распознать ставки. Попробуйте еще раз.")
