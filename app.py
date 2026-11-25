@@ -162,7 +162,6 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-# 🪄 ФУНКЦИЯ КРАСИВОГО ОТОБРАЖЕНИЯ ДЕНЕГ (сохраняет копейки)
 def format_money(val: float) -> str:
     if val == int(val):
         return f"{int(val):,} ₽".replace(",", " ")
@@ -180,7 +179,7 @@ with st.sidebar:
     
     if st.button("🚀 Обработать скриншоты"):
         if uploaded_files:
-            with st.spinner('Нейросеть читает ваши ставки...'):
+            with st.spinner('Нейросеть RapidOCR читает ваши ставки...'):
                 all_new_bets = []
                 diagnostics = []
                 
