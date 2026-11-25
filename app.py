@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
-from datetime import datetime
+from datetime import datetime, timedelta
 import cv2
 import pytesseract
 import numpy as np
@@ -149,16 +149,13 @@ def process_uploaded_images(uploaded_files):
 
         current_date = None
         current_time = None
+        is_transaction = False  # Флаг для отсеивания блоков "Транзакция"
 
         for chunk in chunks:
-            # Переводим в серый, но НЕ инвертируем и НЕ делаем жесткий threshold
             gray = cv2.cvtColor(chunk, cv2.COLOR_BGR2GRAY)
-            
-            # Легкое увеличение для лучшего распознавания
             gray = cv2.resize(gray, None, fx=1.5, fy=1.5, interpolation=cv2.INTER_CUBIC)
 
             try:
-                # psm 6 (единый блок текста) - самый надежный для списков
                 text = pytesseract.image_to_string(gray, lang='rus+eng', config='--psm 6')
             except Exception as e:
                 error_logs.append(f"Ошибка Tesseract: {str(e)}")
@@ -169,28 +166,38 @@ def process_uploaded_images(uploaded_files):
                 line = line.strip()
                 if not line: continue
 
-                # 1. Поиск даты (например: "24 ноября", "5 дек")
-                # Ищем число и первые буквы месяца, чтобы пережить ошибки OCR
-                date_match = re.search(r'(\d{1,2}\s+(?:янв|фев|мар|апр|ма[йя]|июн|июл|авг|сен|окт|ноя|дек)[а-яА-Я]*)', line.lower())
+                lower_line = line.lower()
+
+                # 🪄 ЛОВУШКА ДЛЯ ТРАНЗАКЦИЙ: если видим слово "Транзакция", включаем флаг.
+                # Если видим "Прогноз", выключаем флаг.
+                if 'транзакция' in lower_line:
+                    is_transaction = True
+                elif 'прогноз' in lower_line:
+                    is_transaction = False
+
+                # 1. Поиск даты (число + месяц, или слова "Сегодня", "Вчера")
+                date_match = re.search(r'(\d{1,2}\s+(?:янв|фев|мар|апр|ма[йя]|июн|июл|авг|сен|окт|ноя|дек)[а-яА-Я]*|сегодня|вчера)', lower_line)
                 if date_match:
-                    current_date = date_match.group(1).capitalize()
+                    d_str = date_match.group(1).capitalize()
+                    if d_str.lower() == 'сегодня':
+                        current_date = datetime.now().strftime('%d.%m.%Y')
+                    elif d_str.lower() == 'вчера':
+                        current_date = (datetime.now() - timedelta(days=1)).strftime('%d.%m.%Y')
+                    else:
+                        current_date = d_str
 
                 # 2. Поиск времени (например: "19:25" или "19.25")
                 time_match = re.search(r'(\d{1,2}[:\.]\d{2})', line)
                 if time_match:
                     current_time = time_match.group(1).replace('.', ':')
 
-                # 3. Поиск суммы (ищем + или - с цифрами)
-                # Учитываем, что минус может распознаться как тире, подчеркивание или букву
-                amount_match = re.search(r'([+\-—–_~]\s*\d[\d\s]*)(?:\s*[₽pPрR])?', line)
+                # 3. Поиск суммы (Останавливаемся перед знаком рубля, чтобы не захватить цифру 2 или 7)
+                amount_match = re.search(r'([+-—–_~]\s*\d[\d\s]*?)(?=\s*[₽pPрR2?]|$)', line)
                 
                 if amount_match and current_date and current_time:
-                    # Отсеиваем транзакции
-                    lower_line = line.lower()
-                    if (lower_line.startswith('транзакц') or 
-                        lower_line.startswith('вывод') or 
-                        lower_line.startswith('пополнение') or 
-                        lower_line.startswith('депозит')):
+                    # Если это транзакция - просто пропускаем и сбрасываем время
+                    if is_transaction:
+                        current_time = None
                         continue
 
                     amount_str = amount_match.group(1)
@@ -212,6 +219,8 @@ def process_uploaded_images(uploaded_files):
                             if not all_bets_data or all_bets_data[-1] != new_bet:
                                 all_bets_data.append(new_bet)
                                 
+                            # Сбрасываем время, чтобы не задублировать ставку
+                            current_time = None 
                         except ValueError: 
                             pass
 
@@ -222,7 +231,6 @@ def process_uploaded_images(uploaded_files):
     
     df_res = pd.DataFrame(all_bets_data)
     
-    # Если ничего не нашли, возвращаем ошибки для отладки
     if df_res.empty:
         return df_res, error_logs
         
@@ -293,6 +301,12 @@ if 'df' in st.session_state and not st.session_state.df.empty:
     
     def clean_date(date_str):
         date_str = str(date_str).lower().strip()
+        
+        # Если дата уже в формате ДД.ММ.ГГГГ (например, от "Сегодня")
+        if re.match(r'\d{2}\.\d{2}\.\d{4}', date_str):
+            return date_str
+            
+        # Иначе парсим русский месяц
         for rus_month, num_month in months_dict.items():
             if rus_month in date_str:
                 date_str = date_str.replace(rus_month, num_month).replace(' ', '.')
