@@ -26,7 +26,7 @@ MONTHS = {
 
 def _parse_date_time(text: str, year: int) -> tuple[str | None, str | None]:
     lowered = text.lower().replace("ё", "е")
-    # 🪄 Заменяем латинские буквы на кириллические (частая беда OCR)
+    # 🪄 Лечим латинские буквы в кириллице
     trans = str.maketrans('ceoapxykmthbCEOPAXYKMTHB', 'сеоархукмтнвСЕОАРХУКМТНВ')
     lowered = lowered.translate(trans)
     
@@ -85,13 +85,13 @@ def process_image_bytes(
 
     height, width = image.shape[:2]
     
-    # 🪄 АГРЕССИВНОЕ УВЕЛИЧЕНИЕ: Если картинка маленькая, растягиваем её, чтобы OCR видел текст
-    if width < 1500:
-        scale = 1500 / width
+    # 🪄 АГРЕССИВНОЕ УВЕЛИЧЕНИЕ (до 1200px)
+    if width < 1200:
+        scale = 1200 / width
         image = cv2.resize(image, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
         height, width = image.shape[:2]
 
-    # Конвертируем в серый и инвертируем (помогает OCR с темной темой)
+    # Инверсия для темной темы
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     if np.mean(gray) < 128:
         gray = cv2.bitwise_not(gray)
@@ -116,7 +116,7 @@ def process_image_bytes(
     
     result["diagnostics"]["raw_text"] = "\n".join(txts)
 
-    # Извлекаем блоки текста с координатами
+    # Собираем блоки
     blocks = []
     for i in range(len(txts)):
         box = boxes[i]
@@ -127,70 +127,72 @@ def process_image_bytes(
             "h": float(np.max(box[:, 1]) - np.min(box[:, 1]))
         })
 
-    # Сортируем блоки сверху вниз
-    blocks.sort(key=lambda b: b["y"])
+    # Сортируем сверху-вниз, слева-направо
+    blocks.sort(key=lambda b: (b["y"], b["x"]))
 
-    # 🪄 ГРУППИРУЕМ БЛОКИ В КАРТОЧКИ (собираем текст, который находится на одной высоте)
-    cards = []
-    current_card = []
+    # Группируем в строки
+    lines = []
+    current_line = []
     last_y = None
-    avg_h = np.mean([b["h"] for b in blocks]) if blocks else 20
-    threshold = avg_h * 3.5  # Если текст на расстоянии 3-4 строк, считаем это одной карточкой
-
     for b in blocks:
-        if last_y is None or abs(b["y"] - last_y) < threshold:
-            current_card.append(b)
+        if last_y is None or abs(b["y"] - last_y) < b["h"] * 1.5:
+            current_line.append(b)
             last_y = b["y"]
         else:
-            cards.append(current_card)
-            current_card = [b]
+            current_line.sort(key=lambda x: x["x"])
+            lines.append(current_line)
+            current_line = [b]
             last_y = b["y"]
-    if current_card:
-        cards.append(current_card)
+    if current_line:
+        current_line.sort(key=lambda x: x["x"])
+        lines.append(current_line)
 
     parsed_bets = []
     
-    for card_blocks in cards:
-        card_blocks.sort(key=lambda b: b["x"])
-        card_text = " ".join(b["text"] for b in card_blocks)
+    # 🪄 МЕТОД СКОЛЬЗЯЩЕГО ОКНА
+    i = 0
+    while i < len(lines):
+        # Берем текущую строку и 3 следующие
+        window_lines = lines[i:i+4]
+        window_text = " ".join(" ".join(b["text"] for b in line) for line in window_lines)
+        lower_text = window_text.lower()
         
-        # Пропускаем блоки с транзакциями
-        if "транзакц" in card_text.lower() or "tранзакц" in card_text.lower():
+        # Если это транзакция — пропускаем весь блок
+        if "транзакц" in lower_text or "tранзакц" in lower_text:
             result["diagnostics"]["ignored_transactions"] += 1
+            i += len(window_lines)
             continue
             
-        # Ищем сумму
-        amount_match = re.search(r"([+-])\s*(\d+(?:[.,]\d{1,2})?)", card_text)
-        if not amount_match:
-            continue
-            
-        sign = amount_match.group(1)
-        try:
-            amount = float(amount_match.group(2).replace(",", "."))
-            if sign == '-':
-                amount = -amount
-        except ValueError:
-            continue
-            
-        # Ищем дату и время в собранном тексте
-        date_val, time_val = _parse_date_time(card_text, datetime.now().year)
+        date_val, time_val = _parse_date_time(window_text, datetime.now().year)
+        amount_match = re.search(r"([+-])\s*(\d+(?:[.,]\d{1,2})?)", window_text)
         
-        if date_val and time_val:
+        # Если нашли Дату, Время и Сумму — это ставка!
+        if date_val and time_val and amount_match:
+            sign = amount_match.group(1)
+            try:
+                amount = float(amount_match.group(2).replace(",", "."))
+                if sign == '-':
+                    amount = -amount
+            except ValueError:
+                i += 1
+                continue
+                
             parsed_bets.append({
                 "Дата": date_val,
                 "Время": time_val,
                 "Результат": "Выигрыш" if amount > 0 else "Проигрыш",
                 "Сумма_изменения": amount
             })
+            # Пропускаем эти строки, чтобы не задублировать
+            i += len(window_lines)
         else:
-            result["diagnostics"]["skipped_cards"] += 1
-            result["diagnostics"]["failed_cards"].append(card_text)
+            i += 1
 
-    result["diagnostics"]["detected_cards"] = len(parsed_bets) + result["diagnostics"]["ignored_transactions"] + result["diagnostics"]["skipped_cards"]
+    result["diagnostics"]["detected_cards"] = len(parsed_bets) + result["diagnostics"]["ignored_transactions"]
     result["bets"] = parsed_bets
     result["diagnostics"]["recognized_bets"] = len(parsed_bets)
     
-    if not parsed_bets and not result["diagnostics"]["detected_cards"]:
+    if not parsed_bets and result["diagnostics"]["detected_cards"] == 0:
         result["diagnostics"]["reason"] = "Не найдено ни одной карточки ставки."
 
     return result
