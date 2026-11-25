@@ -4,6 +4,7 @@ import plotly.graph_objects as go
 from datetime import datetime, timedelta
 import cv2
 import pytesseract
+from pytesseract import Output
 import numpy as np
 import re
 
@@ -150,32 +151,44 @@ def process_uploaded_images(uploaded_files):
 
         for chunk in chunks:
             gray = cv2.cvtColor(chunk, cv2.COLOR_BGR2GRAY)
-            # Инверсия для темной темы (белый текст на черном -> черный на белом)
+            # Инверсия для темной темы
             if np.mean(gray) < 128: 
                 gray = cv2.bitwise_not(gray)
                 
-            # Увеличение х2.5 для четкости
+            # Увеличение х2.5
             gray = cv2.resize(gray, None, fx=2.5, fy=2.5, interpolation=cv2.INTER_CUBIC)
 
             try:
-                text = pytesseract.image_to_string(gray, lang='rus+eng', config='--psm 6')
+                d = pytesseract.image_to_data(gray, lang='rus+eng', config='--psm 6', output_type=Output.DICT)
             except Exception:
                 continue
 
-            lines = text.split('\n')
-            for line in lines:
-                line = line.strip()
-                if not line: continue
-                lower_line = line.lower()
+            n_boxes = len(d['text'])
+            lines = {}
+            
+            # Группируем слова по строкам
+            for i in range(n_boxes):
+                if int(d['conf'][i]) > 20 and d['text'][i].strip():
+                    key = (d['block_num'][i], d['par_num'][i], d['line_num'][i])
+                    if key not in lines:
+                        lines[key] = []
+                    lines[key].append({
+                        'text': d['text'][i],
+                        'left': d['left'][i],
+                        'top': d['top'][i],
+                        'width': d['width'][i],
+                        'height': d['height'][i]
+                    })
 
-                # Переключатель транзакций
-                if 'транзакция' in lower_line:
-                    is_transaction = True
-                elif 'прогноз' in lower_line:
-                    is_transaction = False
+            sorted_keys = sorted(lines.keys(), key=lambda k: (k[0], k[1], k[2]))
 
-                # 1. Поиск даты
-                date_match = re.search(r'(\d{1,2}\s+[а-яА-Я]+)', lower_line)
+            for key in sorted_keys:
+                line_words = sorted(lines[key], key=lambda x: x['left'])
+                line_text = " ".join([w['text'] for w in line_words])
+                lower_line = line_text.lower()
+
+                # 1. Дата
+                date_match = re.search(r'(\d{1,2}\s+(?:янв|фев|мар|апр|ма[йя]|июн|июл|авг|сен|окт|ноя|дек)[а-яА-Я]*|сегодня|вчера)', lower_line)
                 if date_match:
                     d_str = date_match.group(1).capitalize()
                     if d_str.lower() == 'сегодня':
@@ -185,43 +198,66 @@ def process_uploaded_images(uploaded_files):
                     else:
                         current_date = d_str
 
-                # 2. Поиск времени
-                time_match = re.search(r'(\d{1,2}[:\.]\d{2})', line)
+                # 2. Время
+                time_match = re.search(r'(\d{1,2}[:\.]\d{2})', line_text)
                 if time_match:
                     current_time = time_match.group(1).replace('.', ':')
 
-                # 3. Поиск суммы
-                amount_match = re.search(r'([+-])\s*(\d[\d\s]*)', line)
-                
-                if amount_match and current_date and current_time and not is_transaction:
-                    sign = amount_match.group(1)
-                    raw_amount = amount_match.group(2).strip()
-                    
-                    # 🪄 Умное отсечение знака рубля (распознанного как цифра '2' или '7')
-                    parts = raw_amount.split()
-                    if len(parts) > 1 and len(parts[-1]) == 1 and parts[-1] in ['2', '7', '1', 'z', 'Z']:
-                        parts = parts[:-1] # Отрезаем последнюю одиночную цифру
-                    
-                    amount_str = "".join(parts)
-                    amount_str = re.sub(r'[^\d]', '', amount_str)
+                # 3. Тип (Транзакция или Прогноз)
+                if 'транзакция' in lower_line:
+                    is_transaction = True
+                elif 'прогноз' in lower_line:
+                    is_transaction = False
 
-                    if amount_str:
+                # 4. Сумма (Хирургический метод)
+                amount_val = None
+                for word_obj in line_words:
+                    word = word_obj['text']
+                    if word.startswith('+') or word.startswith('-'):
+                        # Нашли сумму! Вырезаем её координаты
+                        x, y_box, w_box, h_box = word_obj['left'], word_obj['top'], word_obj['width'], word_obj['height']
+                        
+                        # Расширяем рамку на 10 пикселей, чтобы захватить края
+                        pad = 10
+                        y1, y2_box = max(0, y_box-pad), min(gray.shape[0], y_box+h_box+pad)
+                        x1, x2_box = max(0, x-pad), min(gray.shape[1], x+w_box+pad)
+                        
+                        crop = gray[y1:y2_box, x1:x2_box]
+                        
+                        # 🪄 ЖЕСТКАЯ БИНАРИЗАЦИЯ ОЦУ ДЛЯ СУММЫ
+                        # Это заставит Tesseract видеть форму знака ₽, а не сливать его с цифрой 2
+                        _, crop_thresh = cv2.threshold(crop, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+                        
+                        # Читаем как одно слово
                         try:
-                            amount_val = int(amount_str)
-                            if sign == '-':
-                                amount_val = -amount_val
+                            amount_text = pytesseract.image_to_string(crop_thresh, lang='rus+eng', config='--psm 8').strip()
+                        except:
+                            amount_text = word
                             
-                            new_bet = {
-                                "Дата": current_date.strip(), 
-                                "Время": current_time.strip(), 
-                                "Результат": "Выигрыш" if amount_val > 0 else "Проигрыш", 
-                                "Сумма_изменения": amount_val
-                            }
-                            
-                            all_bets_data.append(new_bet)
-                            current_time = None 
-                        except ValueError: 
-                            pass
+                        # Очищаем от мусора (оставляем только цифры и знаки)
+                        amount_text = amount_text.replace(' ', '').replace(',', '.')
+                        # Берем только целую часть (отбрасываем копейки)
+                        amount_text = amount_text.split('.')[0]
+                        amount_text = re.sub(r'[^\d+-]', '', amount_text)
+                        
+                        if amount_text:
+                            try:
+                                amount_val = int(amount_text)
+                                break # Нашли сумму, выходим из цикла слов
+                            except ValueError:
+                                pass
+                
+                # Если сумма найдена и это не транзакция
+                if amount_val is not None and current_date and current_time and not is_transaction:
+                    new_bet = {
+                        "Дата": current_date.strip(), 
+                        "Время": current_time.strip(), 
+                        "Результат": "Выигрыш" if amount_val > 0 else "Проигрыш", 
+                        "Сумма_изменения": amount_val
+                    }
+                    
+                    all_bets_data.append(new_bet)
+                    current_time = None # Сбрасываем, чтобы не задублировать
 
         progress_bar.progress((idx + 1) / total_files)
 
