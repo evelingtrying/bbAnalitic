@@ -19,70 +19,41 @@ def _get_engine() -> RapidOCR:
     return _ocr_engine
 
 MONTHS = {
-    "янв": 1, "фев": 2, "мар": 3, "апр": 4, "ма": 5,
-    "июн": 6, "июл": 7, "авг": 8, "сен": 9, "сент": 9,
-    "окт": 10, "ноя": 11, "дек": 12,
-    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5,
-    "jun": 6, "jul": 7, "aug": 8, "sep": 9,
-    "oct": 10, "nov": 11, "dec": 12,
+    "янв": 1, "фев": 2, "мар": 3, "апр": 4, "мая": 5, "май": 5, "ма": 5,
+    "июн": 6, "июл": 7, "авг": 8, "сен": 9, "сент": 9, "окт": 10,
+    "ноя": 11, "дек": 12,
 }
 
-def _normalize_month(month_text: str) -> int | None:
-    value = month_text.lower().strip()
-    for prefix, month_number in MONTHS.items():
-        if value.startswith(prefix):
-            return month_number
-    return None
-
-def _parse_date_time(text: str, year: int) -> tuple[str | None, str | None, int | None]:
+def _parse_date_time(text: str, year: int) -> tuple[str | None, str | None]:
     lowered = text.lower().replace("ё", "е")
-    
-    # 🪄 Нормализация латинских букв в кириллицу (частая ошибка OCR)
-    trans = str.maketrans('ceoapxykmthb', 'сеоархукмтнв')
+    # 🪄 Заменяем латинские буквы на кириллические (частая беда OCR)
+    trans = str.maketrans('ceoapxykmthbCEOPAXYKMTHB', 'сеоархукмтнвСЕОАРХУКМТНВ')
     lowered = lowered.translate(trans)
     
+    time_val = None
     time_match = re.search(r"([01]?\d|2[0-3])[:.,-]\s*([0-5]\d)", lowered)
-    time_value = None
     if time_match:
-        time_value = f"{int(time_match.group(1)):02d}:{time_match.group(2)}"
+        time_val = f"{int(time_match.group(1)):02d}:{time_match.group(2)}"
 
-    if "сегодня" in lowered or "today" in lowered:
-        date_value = datetime.now().date()
-        return date_value.strftime("%d.%m.%Y"), time_value, date_value.month
-    if "вчера" in lowered or "yesterday" in lowered:
-        date_value = (datetime.now() - timedelta(days=1)).date()
-        return date_value.strftime("%d.%m.%Y"), time_value, date_value.month
+    if "сегодня" in lowered:
+        d = datetime.now().date()
+        return d.strftime("%d.%m.%Y"), time_val
+    if "вчера" in lowered:
+        d = (datetime.now() - timedelta(days=1)).date()
+        return d.strftime("%d.%m.%Y"), time_val
 
     date_match = re.search(r"\b(\d{1,2})\s+([a-zа-яё]+)", lowered)
     if date_match:
         day = int(date_match.group(1))
-        month = _normalize_month(date_match.group(2))
-        if month:
-            try:
-                date_value = datetime(year, month, day)
-                return date_value.strftime("%d.%m.%Y"), time_value, month
-            except ValueError:
-                return None, time_value, None
-                
-    return None, time_value, None
-
-
-def _parse_signed_amount(text: str) -> float | None:
-    normalized = (
-        text.replace("−", "-")
-        .replace("–", "-")
-        .replace("—", "-")
-        .replace("＋", "+")
-        .replace("\n", " ")
-    )
-    match = re.search(r"([+-])\s*(\d+(?:[.,]\d{1,2})?)", normalized)
-    if not match:
-        return None
-    try:
-        number = float(match.group(2).replace(",", "."))
-    except ValueError:
-        return None
-    return number if match.group(1) == "+" else -number
+        month_str = date_match.group(2)
+        for m_name, m_num in MONTHS.items():
+            if month_str.startswith(m_name):
+                try:
+                    d = datetime(year, m_num, day)
+                    return d.strftime("%d.%m.%Y"), time_val
+                except ValueError:
+                    pass
+    return None, time_val
 
 
 def process_image_bytes(
@@ -114,18 +85,24 @@ def process_image_bytes(
 
     height, width = image.shape[:2]
     
-    # 🪄 Если картинка мелкая, растягиваем её до нормального размера
-    if width < 1000:
-        scale = 1000 / width
+    # 🪄 АГРЕССИВНОЕ УВЕЛИЧЕНИЕ: Если картинка маленькая, растягиваем её, чтобы OCR видел текст
+    if width < 1500:
+        scale = 1500 / width
         image = cv2.resize(image, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
         height, width = image.shape[:2]
+
+    # Конвертируем в серый и инвертируем (помогает OCR с темной темой)
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    if np.mean(gray) < 128:
+        gray = cv2.bitwise_not(gray)
+    image_for_ocr = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
 
     result["diagnostics"]["width"] = width
     result["diagnostics"]["height"] = height
 
     try:
         ocr = _get_engine()
-        ocr_output = ocr(image)
+        ocr_output = ocr(image_for_ocr)
     except Exception as exc:
         result["diagnostics"]["reason"] = f"Ошибка при запуске RapidOCR: {exc}"
         return result
@@ -142,60 +119,66 @@ def process_image_bytes(
     # Извлекаем блоки текста с координатами
     blocks = []
     for i in range(len(txts)):
-        text = txts[i]
         box = boxes[i]
-        x_center = float(np.mean(box[:, 0]))
-        y_center = float(np.mean(box[:, 1]))
-        y_min = float(np.min(box[:, 1]))
-        y_max = float(np.max(box[:, 1]))
         blocks.append({
-            "text": text,
-            "x": x_center,
-            "y": y_center,
-            "h": y_max - y_min,
+            "text": txts[i],
+            "x": float(np.mean(box[:, 0])),
+            "y": float(np.mean(box[:, 1])),
+            "h": float(np.max(box[:, 1]) - np.min(box[:, 1]))
         })
 
     # Сортируем блоки сверху вниз
     blocks.sort(key=lambda b: b["y"])
 
-    # 🪄 Ищем "якоря" (Прогноз или Транзакция)
-    anchors = []
-    for b in blocks:
-        text_lower = b["text"].lower().replace("ё", "е")
-        # Чиним частые ошибки OCR
-        text_lower = text_lower.replace("пpогноз", "прогноз").replace("tранзакция", "транзакция")
-        
-        if "прогноз" in text_lower or "транзакц" in text_lower:
-            is_transaction = "транзакц" in text_lower
-            anchors.append({
-                "y": b["y"],
-                "is_transaction": is_transaction
-            })
+    # 🪄 ГРУППИРУЕМ БЛОКИ В КАРТОЧКИ (собираем текст, который находится на одной высоте)
+    cards = []
+    current_card = []
+    last_y = None
+    avg_h = np.mean([b["h"] for b in blocks]) if blocks else 20
+    threshold = avg_h * 3.5  # Если текст на расстоянии 3-4 строк, считаем это одной карточкой
 
-    anchors.sort(key=lambda x: x["y"])
+    for b in blocks:
+        if last_y is None or abs(b["y"] - last_y) < threshold:
+            current_card.append(b)
+            last_y = b["y"]
+        else:
+            cards.append(current_card)
+            current_card = [b]
+            last_y = b["y"]
+    if current_card:
+        cards.append(current_card)
 
     parsed_bets = []
     
-    # 🪄 Разбиваем картинку на карточки (от одного якоря до другого)
-    for idx, anchor in enumerate(anchors):
-        y_start = anchor["y"]
-        y_end = anchors[idx+1]["y"] if idx + 1 < len(anchors) else float('inf')
+    for card_blocks in cards:
+        card_blocks.sort(key=lambda b: b["x"])
+        card_text = " ".join(b["text"] for b in card_blocks)
         
-        if anchor["is_transaction"]:
+        # Пропускаем блоки с транзакциями
+        if "транзакц" in card_text.lower() or "tранзакц" in card_text.lower():
             result["diagnostics"]["ignored_transactions"] += 1
             continue
             
-        # Собираем весь текст внутри этой карточки
-        card_blocks = [b for b in blocks if y_start <= b["y"] < y_end]
-        card_text = " ".join(b["text"] for b in card_blocks)
+        # Ищем сумму
+        amount_match = re.search(r"([+-])\s*(\d+(?:[.,]\d{1,2})?)", card_text)
+        if not amount_match:
+            continue
+            
+        sign = amount_match.group(1)
+        try:
+            amount = float(amount_match.group(2).replace(",", "."))
+            if sign == '-':
+                amount = -amount
+        except ValueError:
+            continue
+            
+        # Ищем дату и время в собранном тексте
+        date_val, time_val = _parse_date_time(card_text, datetime.now().year)
         
-        date_value, time_value, _ = _parse_date_time(card_text, datetime.now().year)
-        amount = _parse_signed_amount(card_text)
-        
-        if date_value and time_value and amount is not None:
+        if date_val and time_val:
             parsed_bets.append({
-                "Дата": date_value,
-                "Время": time_value,
+                "Дата": date_val,
+                "Время": time_val,
                 "Результат": "Выигрыш" if amount > 0 else "Проигрыш",
                 "Сумма_изменения": amount
             })
@@ -203,13 +186,11 @@ def process_image_bytes(
             result["diagnostics"]["skipped_cards"] += 1
             result["diagnostics"]["failed_cards"].append(card_text)
 
-    result["diagnostics"]["detected_cards"] = len(anchors)
+    result["diagnostics"]["detected_cards"] = len(parsed_bets) + result["diagnostics"]["ignored_transactions"] + result["diagnostics"]["skipped_cards"]
     result["bets"] = parsed_bets
     result["diagnostics"]["recognized_bets"] = len(parsed_bets)
     
-    if not parsed_bets and not anchors:
-        result["diagnostics"]["reason"] = "Не найдено ни одной карточки ставки (нет слов 'Прогноз' или 'Транзакция')."
-    elif not parsed_bets:
-        result["diagnostics"]["reason"] = "Карточки найдены, но не удалось извлечь дату, время или сумму."
+    if not parsed_bets and not result["diagnostics"]["detected_cards"]:
+        result["diagnostics"]["reason"] = "Не найдено ни одной карточки ставки."
 
     return result
