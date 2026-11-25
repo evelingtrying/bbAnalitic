@@ -155,11 +155,12 @@ def process_uploaded_images(uploaded_files):
             if np.mean(gray) < 128: 
                 gray = cv2.bitwise_not(gray)
                 
-            # Увеличение х2.5
-            gray = cv2.resize(gray, None, fx=2.5, fy=2.5, interpolation=cv2.INTER_CUBIC)
+            # Увеличение х2.5 для четкости
+            scale = 2.5
+            gray_resized = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
 
             try:
-                d = pytesseract.image_to_data(gray, lang='rus+eng', config='--psm 6', output_type=Output.DICT)
+                d = pytesseract.image_to_data(gray_resized, lang='rus+eng', config='--psm 6', output_type=Output.DICT)
             except Exception:
                 continue
 
@@ -209,43 +210,22 @@ def process_uploaded_images(uploaded_files):
                 elif 'прогноз' in lower_line:
                     is_transaction = False
 
-                # 4. Сумма (Хирургический метод)
+                # 4. Сумма (Ищем только в правой части экрана)
                 amount_val = None
                 for word_obj in line_words:
-                    word = word_obj['text']
+                    word = word_obj['text'].strip()
                     if word.startswith('+') or word.startswith('-'):
-                        # Нашли сумму! Вырезаем её координаты
-                        x, y_box, w_box, h_box = word_obj['left'], word_obj['top'], word_obj['width'], word_obj['height']
+                        # 🪄 КРИТИЧЕСКИЙ ФИКС: Сумма всегда справа. Отсекаем левую часть (дату).
+                        if word_obj['left'] < (chunk.shape[1] * scale * 0.4):
+                            continue
                         
-                        # Расширяем рамку на 10 пикселей, чтобы захватить края
-                        pad = 10
-                        y1, y2_box = max(0, y_box-pad), min(gray.shape[0], y_box+h_box+pad)
-                        x1, x2_box = max(0, x-pad), min(gray.shape[1], x+w_box+pad)
-                        
-                        crop = gray[y1:y2_box, x1:x2_box]
-                        
-                        # 🪄 ЖЕСТКАЯ БИНАРИЗАЦИЯ ОЦУ ДЛЯ СУММЫ
-                        # Это заставит Tesseract видеть форму знака ₽, а не сливать его с цифрой 2
-                        _, crop_thresh = cv2.threshold(crop, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
-                        
-                        # Читаем как одно слово
-                        try:
-                            amount_text = pytesseract.image_to_string(crop_thresh, lang='rus+eng', config='--psm 8').strip()
-                        except:
-                            amount_text = word
-                            
-                        # Очищаем от мусора (оставляем только цифры и знаки)
-                        amount_text = amount_text.replace(' ', '').replace(',', '.')
-                        # Берем только целую часть (отбрасываем копейки)
-                        amount_text = amount_text.split('.')[0]
-                        amount_text = re.sub(r'[^\d+-]', '', amount_text)
-                        
-                        if amount_text:
-                            try:
-                                amount_val = int(amount_text)
-                                break # Нашли сумму, выходим из цикла слов
-                            except ValueError:
-                                pass
+                        # Извлекаем только цифры из слова (например, из "+921" получим "921")
+                        digits = re.sub(r'[^\d]', '', word)
+                        if digits:
+                            amount_val = int(digits)
+                            if word.startswith('-'):
+                                amount_val = -amount_val
+                            break # Нашли сумму, дальше по строке не идем
                 
                 # Если сумма найдена и это не транзакция
                 if amount_val is not None and current_date and current_time and not is_transaction:
