@@ -149,7 +149,6 @@ def process_uploaded_images(uploaded_files):
 
         current_date = None
         current_time = None
-        is_transaction = False
 
         for chunk in chunks:
             gray = cv2.cvtColor(chunk, cv2.COLOR_BGR2GRAY)
@@ -162,16 +161,14 @@ def process_uploaded_images(uploaded_files):
                 continue
 
             lines = text.split('\n')
-            for line in lines:
+            for i, line in enumerate(lines):
                 line = line.strip()
                 if not line: continue
                 lower_line = line.lower()
 
-                # 🪄 Проверка на транзакцию
-                if 'транзакция' in lower_line:
-                    is_transaction = True
-                elif 'прогноз' in lower_line:
-                    is_transaction = False
+                # 🪄 Контекстный фильтр транзакций (смотрим на 3 строки назад и 1 вперед)
+                context = " ".join(lines[max(0, i-3):min(len(lines), i+2)]).lower()
+                is_transaction = 'транзакция' in context and 'прогноз' not in context
 
                 # 1. Поиск даты
                 date_match = re.search(r'(\d{1,2}\s+(?:янв|фев|мар|апр|ма[йя]|июн|июл|авг|сен|окт|ноя|дек)[а-яА-Я]*|сегодня|вчера)', lower_line)
@@ -189,9 +186,8 @@ def process_uploaded_images(uploaded_files):
                 if time_match:
                     current_time = time_match.group(1).replace('.', ':')
 
-                # 3. Поиск суммы (БЕРЕМ ТОЛЬКО ЦЕЛУЮ ЧАСТЬ, ИГНОРИРУЕМ ВСЁ ОСТАЛЬНОЕ)
-                # Ищем знак + или -, затем цифры и пробелы
-                amount_match = re.search(r'([+-])\s*(\d[\d\s]*)', line)
+                # 3. Поиск суммы (Строгий парсинг: берет только целые числа, игнорируя мусор и копейки)
+                amount_match = re.search(r'([+-])\s*(\d+(?:[\s.,]\d{3})*)', line)
                 
                 if amount_match and current_date and current_time:
                     if is_transaction:
@@ -199,30 +195,27 @@ def process_uploaded_images(uploaded_files):
                         continue
 
                     sign = amount_match.group(1)
-                    # Убираем пробелы и всё, что после точки или запятой
-                    amount_str = amount_match.group(2).replace(' ', '')
-                    amount_str = amount_str.split('.')[0].split(',')[0]
-                    amount_str = re.sub(r'[^\d]', '', amount_str)
-
-                    if amount_str:
-                        try:
-                            amount_val = int(amount_str)
-                            if sign == '-':
-                                amount_val = -amount_val
+                    # Очищаем строку от пробелов, точек и запятых, оставляя только цифры
+                    amount_str = amount_match.group(2).replace(' ', '').replace(',', '').replace('.', '')
+                    
+                    try:
+                        amount_val = int(amount_str)
+                        if sign == '-':
+                            amount_val = -amount_val
+                        
+                        new_bet = {
+                            "Дата": current_date.strip(), 
+                            "Время": current_time.strip(), 
+                            "Результат": "Выигрыш" if amount_val > 0 else "Проигрыш", 
+                            "Сумма_изменения": amount_val
+                        }
+                        
+                        if not all_bets_data or all_bets_data[-1] != new_bet:
+                            all_bets_data.append(new_bet)
                             
-                            new_bet = {
-                                "Дата": current_date.strip(), 
-                                "Время": current_time.strip(), 
-                                "Результат": "Выигрыш" if amount_val > 0 else "Проигрыш", 
-                                "Сумма_изменения": amount_val
-                            }
-                            
-                            if not all_bets_data or all_bets_data[-1] != new_bet:
-                                all_bets_data.append(new_bet)
-                                
-                            current_time = None 
-                        except ValueError: 
-                            pass
+                        current_time = None 
+                    except ValueError: 
+                        pass
 
         progress_bar.progress((idx + 1) / total_files)
 
