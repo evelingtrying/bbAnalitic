@@ -53,9 +53,11 @@ def _find_card_rows(gray: np.ndarray) -> tuple[list[tuple[int, int]], tuple[int,
     pixel_threshold = background + max(3.0, min(8.0, (255.0 - background) * 0.025))
 
     row_score = np.mean(gray > pixel_threshold, axis=1)
-    smooth_score = np.convolve(row_score, np.ones(5, dtype=np.float32) / 5.0, mode="same")
-    relative_cutoff = float(np.percentile(smooth_score, 95)) * 0.35
-    cutoff = max(0.06, min(0.25, relative_cutoff))
+    
+    # Более чувствительное определение строк, чтобы ловить тонкие отступы
+    smooth_score = np.convolve(row_score, np.ones(3, dtype=np.float32) / 3.0, mode="same")
+    relative_cutoff = float(np.percentile(smooth_score, 95)) * 0.25
+    cutoff = max(0.02, min(0.15, relative_cutoff))
     active = smooth_score >= cutoff
 
     segments: list[tuple[int, int]] = []
@@ -64,29 +66,11 @@ def _find_card_rows(gray: np.ndarray) -> tuple[list[tuple[int, int]], tuple[int,
         if is_active and start is None:
             start = y
         elif not is_active and start is not None:
-            if y - start >= 18:
+            if y - start >= 15:
                 segments.append((start, y))
             start = None
-    if start is not None and height - start >= 18:
+    if start is not None and height - start >= 15:
         segments.append((start, height))
-
-    if not segments:
-        return [], (0, width), background
-
-    heights = np.asarray([b - a for a, b in segments], dtype=np.float32)
-    median_h = float(np.median(heights))
-    
-    # 🪄 ИСПРАВЛЕНИЕ: Если блок слишком высокий (склеились 2 карточки), режем его пополам
-    new_segments = []
-    for a, b in segments:
-        h = b - a
-        if 0.42 * median_h <= h <= 1.6 * median_h:
-            new_segments.append((a, b))
-        elif h > 1.6 * median_h:
-            mid = (a + b) // 2
-            new_segments.append((a, mid))
-            new_segments.append((mid, b))
-    segments = new_segments
 
     if not segments:
         return [], (0, width), background
@@ -183,12 +167,18 @@ def _ocr_one_card(
     gray: np.ndarray,
     row: tuple[int, int],
     content_x: tuple[int, int],
-) -> dict[str, Any]:
+) -> list[dict[str, Any]]:
     y0, y1 = row
     x0, x1 = content_x
+    
+    # Защита от слишком маленьких обрезков
+    if y1 - y0 < 15:
+        return []
+
     row_height = max(1, y1 - y0)
     split_x = int(x0 + (x1 - x0) * 0.80)
 
+    # OCR левой части (дата, время, тип)
     left_date = gray[max(0, y0 - 2):min(gray.shape[0], y1 + 2), x0:split_x]
     left_date = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(left_date)
     left_date = 255 - left_date
@@ -199,6 +189,16 @@ def _ocr_one_card(
         config="--oem 1 --psm 6",
     ).strip()
 
+    lowered = card_text.lower().replace("ё", "е")
+    
+    # 🪄 РЕКУРСИВНОЕ РАЗДЕЛЕНИЕ: Если нашли 2 даты в одном блоке — режем пополам!
+    date_matches = re.findall(r"\b\d{1,2}\s+[a-zа-яё]+", lowered)
+    if len(date_matches) > 1:
+        mid = (y0 + y1) // 2
+        # Возвращаем список из двух результатов (верхняя и нижняя часть)
+        return _ocr_one_card(gray, (y0, mid), content_x) + _ocr_one_card(gray, (mid, y1), content_x)
+
+    # OCR правой части (сумма)
     amount_y0 = min(y1 - 1, y0 + int(row_height * 0.48))
     amount_y1 = min(gray.shape[0], y0 + int(row_height * 0.90))
     amount_crop = gray[amount_y0:amount_y1, split_x:x1]
@@ -210,7 +210,6 @@ def _ocr_one_card(
         config="--oem 1 --psm 6 -c tessedit_char_whitelist=+-0123456789.,",
     ).strip()
 
-    lowered = card_text.lower().replace("ё", "е")
     if "транзакц" in lowered:
         card_type = "transaction"
     elif "прогноз" in lowered:
@@ -218,14 +217,14 @@ def _ocr_one_card(
     else:
         card_type = "unknown"
 
-    return {
+    return [{
         "type": card_type,
         "text": card_text,
         "amount_text": amount_text,
         "amount": _parse_signed_amount(amount_text),
         "date_time": card_text,
         "y": y0,
-    }
+    }]
 
 
 def process_image_bytes(
@@ -261,7 +260,7 @@ def process_image_bytes(
     if width < 700:
         result["diagnostics"]["reason"] = (
             f"Слишком низкое разрешение ({width} px по ширине). "
-            "Загрузите оригинальный скриншот, а не уменьшенную миниатюру."
+            "Загрузите оригинальный скриншот."
         )
         return result
 
@@ -285,7 +284,7 @@ def process_image_bytes(
         return result
 
     result["diagnostics"]["detected_cards"] = len(rows)
-    parsed_cards: list[dict[str, Any] | None] = [None] * len(rows)
+    parsed_cards: list[dict[str, Any]] = []
     workers = max(1, min(4, os.cpu_count() or 2))
 
     with ThreadPoolExecutor(max_workers=workers) as executor:
@@ -295,14 +294,11 @@ def process_image_bytes(
         }
         completed = 0
         for future in as_completed(future_to_index):
-            index = future_to_index[future]
             try:
-                parsed_cards[index] = future.result()
+                # Теперь результат — это список, так как могут быть склеенные карточки
+                parsed_cards.extend(future.result())
             except Exception:
-                parsed_cards[index] = {
-                    "type": "unknown", "text": "", "amount_text": "",
-                    "amount": None, "date_time": "", "y": rows[index][0],
-                }
+                pass
             completed += 1
             if progress_callback:
                 progress_callback(completed, len(rows))
@@ -311,10 +307,6 @@ def process_image_bytes(
     previous_month: int | None = None
 
     for card in parsed_cards:
-        if card is None:
-            result["diagnostics"]["skipped_cards"] += 1
-            continue
-
         if card["type"] == "transaction":
             result["diagnostics"]["ignored_transactions"] += 1
             continue
