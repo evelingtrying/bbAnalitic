@@ -123,18 +123,21 @@ def process_uploaded_images(uploaded_files):
     total_files = len(uploaded_files)
     progress_bar = st.progress(0)
     status_text = st.empty()
+    error_logs = []
     
     for idx, uploaded_file in enumerate(uploaded_files):
         status_text.text(f"Обработка файла {idx+1} из {total_files}...")
         file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
         img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
-        if img is None: continue
+        if img is None: 
+            error_logs.append(f"Файл {uploaded_file.name}: не удалось прочитать изображение.")
+            continue
 
         h, w = img.shape[:2]
         
-        # Нарезка на куски по 5000 пикселей с перекрытием 800 (безопасно для Tesseract)
-        max_height = 5000
-        overlap = 800
+        # Нарезка на куски по 4000 пикселей с перекрытием 600
+        max_height = 4000
+        overlap = 600
         
         chunks = []
         y = 0
@@ -144,46 +147,45 @@ def process_uploaded_images(uploaded_files):
             if y2 == h: break
             y = y2 - overlap
 
-        # 🪄 КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: Переменные даты и времени объявлены ДО цикла кусков.
-        # Теперь они сохраняются, даже если картинка порезана.
         current_date = None
         current_time = None
 
         for chunk in chunks:
+            # Переводим в серый, но НЕ инвертируем и НЕ делаем жесткий threshold
             gray = cv2.cvtColor(chunk, cv2.COLOR_BGR2GRAY)
             
-            # Выравнивание контраста (спасает красные минусы от исчезновения)
-            gray = cv2.equalizeHist(gray)
-            
-            if np.mean(gray) < 128: 
-                gray = cv2.bitwise_not(gray)
-                
-            gray = cv2.resize(gray, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
-            _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+            # Легкое увеличение для лучшего распознавания
+            gray = cv2.resize(gray, None, fx=1.5, fy=1.5, interpolation=cv2.INTER_CUBIC)
 
-            # psm 6 (единый блок текста) отлично подходит для списков
-            text = pytesseract.image_to_string(thresh, lang='rus+eng', config='--psm 6')
+            try:
+                # psm 6 (единый блок текста) - самый надежный для списков
+                text = pytesseract.image_to_string(gray, lang='rus+eng', config='--psm 6')
+            except Exception as e:
+                error_logs.append(f"Ошибка Tesseract: {str(e)}")
+                break
 
             lines = text.split('\n')
             for line in lines:
                 line = line.strip()
                 if not line: continue
 
-                # 1. Поиск даты (например: "24 ноября")
-                date_match = re.search(r'(\d{1,2}\s+[а-яА-Я]+)', line)
+                # 1. Поиск даты (например: "24 ноября", "5 дек")
+                # Ищем число и первые буквы месяца, чтобы пережить ошибки OCR
+                date_match = re.search(r'(\d{1,2}\s+(?:янв|фев|мар|апр|ма[йя]|июн|июл|авг|сен|окт|ноя|дек)[а-яА-Я]*)', line.lower())
                 if date_match:
-                    current_date = date_match.group(1)
+                    current_date = date_match.group(1).capitalize()
 
-                # 2. Поиск времени (например: "19:25")
-                time_match = re.search(r'(\d{2}:\d{2})', line)
+                # 2. Поиск времени (например: "19:25" или "19.25")
+                time_match = re.search(r'(\d{1,2}[:\.]\d{2})', line)
                 if time_match:
-                    current_time = time_match.group(1)
+                    current_time = time_match.group(1).replace('.', ':')
 
-                # 3. Поиск суммы (учитываем минусы, тире и случайные символы OCR)
-                amount_match = re.search(r'([+\-—–_]\s*\d[\d\s.,]*)(?:\s*[₽pPрR])?', line)
+                # 3. Поиск суммы (ищем + или - с цифрами)
+                # Учитываем, что минус может распознаться как тире, подчеркивание или букву
+                amount_match = re.search(r'([+\-—–_~]\s*\d[\d\s]*)(?:\s*[₽pPрR])?', line)
                 
                 if amount_match and current_date and current_time:
-                    # Отсеиваем транзакции (переводы, выводы)
+                    # Отсеиваем транзакции
                     lower_line = line.lower()
                     if (lower_line.startswith('транзакц') or 
                         lower_line.startswith('вывод') or 
@@ -192,7 +194,7 @@ def process_uploaded_images(uploaded_files):
                         continue
 
                     amount_str = amount_match.group(1)
-                    amount_str = amount_str.replace(' ', '').replace('—', '-').replace('–', '-').replace('_', '-')
+                    amount_str = amount_str.replace(' ', '').replace('—', '-').replace('–', '-').replace('_', '-').replace('~', '-')
                     amount_str = re.sub(r'[^\d+-]', '', amount_str)
 
                     if amount_str and amount_str[0] in '+-':
@@ -206,7 +208,7 @@ def process_uploaded_images(uploaded_files):
                                 "Сумма_изменения": amount_val
                             }
                             
-                            # 🪄 Защита от дубликатов только на стыках кусков (сравниваем с последней ставкой)
+                            # Защита от дубликатов на стыках кусков
                             if not all_bets_data or all_bets_data[-1] != new_bet:
                                 all_bets_data.append(new_bet)
                                 
@@ -219,7 +221,12 @@ def process_uploaded_images(uploaded_files):
     progress_bar.empty()
     
     df_res = pd.DataFrame(all_bets_data)
-    return df_res
+    
+    # Если ничего не нашли, возвращаем ошибки для отладки
+    if df_res.empty:
+        return df_res, error_logs
+        
+    return df_res, []
 
 # ==========================================
 # 📊 ОСНОВНАЯ ЛОГИКА
@@ -236,18 +243,23 @@ with st.sidebar:
     if st.button("🚀 Обработать скриншоты"):
         if uploaded_files:
             with st.spinner('Нейросеть читает ваши ставки... Это займет около 10-20 секунд...'):
-                new_df = process_uploaded_images(uploaded_files)
+                new_df, errors = process_uploaded_images(uploaded_files)
                 if not new_df.empty:
                     if 'df' not in st.session_state:
                         st.session_state.df = new_df
                     else:
-                        # При объединении старых и новых данных просто конкатенируем
                         combined = pd.concat([st.session_state.df, new_df])
                         st.session_state.df = combined.reset_index(drop=True)
                     st.success(f"Данные обновлены! Распознано ставок: {len(new_df)}")
                     st.rerun()
                 else:
-                    st.error("Не удалось распознать ставки. Попробуйте еще раз.")
+                    st.error("Не удалось распознать ставки.")
+                    if errors:
+                        st.warning("Технические детали:")
+                        for err in errors:
+                            st.text(err)
+                    else:
+                        st.info("Попробуйте сделать скриншот более высокого качества или обрезать лишние края.")
         else:
             st.warning("Пожалуйста, выберите файлы.")
 
